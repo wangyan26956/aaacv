@@ -2,13 +2,12 @@ import * as https from 'https';
 import * as http from 'http';
 import { getConfig } from './config';
 import { addMessage } from './chatHistory';
-import { getEditorContext, buildContextString } from './contextProvider';
+import { getFullContext, ctxToPrompt } from './contextProvider';
 
-function generateId(): string {
-  return 'xxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+function genId(): string {
+  return 'xxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx'.replace(/[xy]/g, c => {
     const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
   });
 }
 
@@ -19,211 +18,132 @@ interface SseEvent {
   finished?: number;
 }
 
-function streamRequest(
-  postUrl: string,
-  payload: Record<string, unknown>,
+function sse(
+  url: string,
+  body: Record<string, unknown>,
   headers: Record<string, string>,
-  verifySsl: boolean,
-  onData: (event: SseEvent) => void,
+  skipSsl: boolean,
+  onData: (e: SseEvent) => void,
   onDone: () => void,
-  onError: (err: Error) => void
+  onErr: (err: Error) => void
 ): void {
-  const parsed = new URL(postUrl);
-  const isHttps = parsed.protocol === 'https:';
-  const transport = isHttps ? https : http;
+  const u = new URL(url);
+  const t = u.protocol === 'https:' ? https : http;
 
-  const options = {
-    hostname: parsed.hostname,
-    port: parsed.port || (isHttps ? 443 : 80),
-    path: parsed.pathname + parsed.search,
+  const req = t.request({
+    hostname: u.hostname,
+    port: u.port || (u.protocol === 'https:' ? 443 : 80),
+    path: u.pathname + u.search,
     method: 'POST',
-    headers: {
-      ...headers,
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
-    },
-    rejectUnauthorized: verifySsl,
-  };
-
-  const req = transport.request(options, (res) => {
-    let buffer = '';
+    headers: { ...headers, 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    rejectUnauthorized: !skipSsl,
+  }, res => {
+    let buf = '';
     res.on('data', (chunk: Buffer) => {
-      buffer += chunk.toString();
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
+      buf += chunk.toString();
+      const lines = buf.split('\n');
+      buf = lines.pop() || '';
       for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const dataStr = line.slice(6);
-          if (dataStr.trim() === '[DONE]') {
-            onDone();
-            return;
-          }
-          try {
-            const event = JSON.parse(dataStr) as SseEvent;
-            onData(event);
-          } catch {
-            // skip unparseable lines
-          }
-        }
+        if (!line.startsWith('data: ')) continue;
+        const raw = line.slice(6);
+        if (raw.trim() === '[DONE]') return onDone();
+        try { onData(JSON.parse(raw)); } catch { /* skip */ }
       }
     });
     res.on('end', onDone);
-    res.on('error', onError);
+    res.on('error', onErr);
   });
-
-  req.on('error', onError);
-  req.write(JSON.stringify(payload));
+  req.on('error', onErr);
+  req.write(JSON.stringify(body));
   req.end();
 }
 
-export interface StreamChunk {
-  content: string;
+function mkHeaders(token: string): Record<string, string> {
+  return {
+    authorization: token,
+    referer: 'https://nfoprd-cn.aia.biz/',
+    'staff_assistant-header': 'staff_assistant',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0',
+  };
+}
+
+function mkBody(question: string): Record<string, unknown> {
+  const cfg = getConfig();
+  return {
+    code: 'direct_model',
+    question: question + '\n',
+    history: [],
+    kb_id: cfg.kbId,
+    chat_id: genId(),
+    reasoning_model: cfg.reasoningModel ? 1 : 0,
+    web_search: cfg.webSearch ? 1 : 0,
+    regenerate: 0,
+    quote_message_id: '',
+  };
 }
 
 export async function streamChat(
   userMessage: string,
-  onChunk: (chunk: StreamChunk) => void,
-  onThinking: (text: string) => void,
-  includeContext: boolean = true
+  onChunk: (text: string) => void,
+  onThinking: (text: string) => void
 ): Promise<void> {
-  const config = getConfig();
-
-  if (!config.token) {
-    onChunk({ content: '**Error:** AIA token is not set. Please set `claudeCode.token` in VSCode settings.' });
+  const cfg = getConfig();
+  if (!cfg.token) {
+    onChunk('**Error:** AIA token is not set.');
     return;
   }
 
-  let question = userMessage;
+  const ctx = await getFullContext();
+  const prompt = ctxToPrompt(ctx);
+  const question = `${prompt}\n\n---\nUser: ${userMessage}`;
 
-  if (includeContext) {
-    const ctx = getEditorContext();
-    if (ctx) {
-      const contextStr = buildContextString(ctx);
-      question = `${contextStr}\n\n---\n\nUser question: ${userMessage}`;
-    }
-  }
-
-  const payload = {
-    code: 'direct_model',
-    question: question + '\n',
-    history: [],
-    kb_id: config.kbId,
-    chat_id: generateId(),
-    reasoning_model: config.reasoningModel ? 1 : 0,
-    web_search: config.webSearch ? 1 : 0,
-    regenerate: 0,
-    quote_message_id: '',
-  };
-
-  const headers: Record<string, string> = {
-    authorization: config.token,
-    referer: 'https://nfoprd-cn.aia.biz/',
-    'staff_assistant-header': 'staff_assistant',
-    'user-agent':
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0',
-  };
-
-  return new Promise((resolve) => {
-    let fullResponse = '';
-
-    streamRequest(
-      config.baseUrl,
-      payload,
-      headers,
-      config.verifySsl,
-      (event) => {
-        const gptResponse = event.gpt_response || '';
-        const thinking = event.thinking || '';
-        const msgType = event.message_type;
-
-        if (thinking && config.showThinking) {
-          onThinking(thinking);
-        }
-
-        if (gptResponse && (msgType === 4 || msgType === 5)) {
-          const newPart = gptResponse.slice(fullResponse.length);
-          if (newPart) {
-            fullResponse = gptResponse;
-            onChunk({ content: newPart });
-          }
+  return new Promise(resolve => {
+    let full = '';
+    sse(
+      cfg.baseUrl, mkBody(question), mkHeaders(cfg.token), cfg.verifySsl,
+      (ev) => {
+        const txt = ev.gpt_response || '';
+        const think = ev.thinking || '';
+        const mt = ev.message_type;
+        if (think && cfg.showThinking) onThinking(think);
+        if (txt && (mt === 4 || mt === 5)) {
+          const delta = txt.slice(full.length);
+          if (delta) { full = txt; onChunk(delta); }
         }
       },
       () => {
         addMessage({ role: 'user', content: userMessage, timestamp: Date.now() });
-        addMessage({ role: 'assistant', content: fullResponse, timestamp: Date.now() });
+        addMessage({ role: 'assistant', content: full, timestamp: Date.now() });
         resolve();
       },
-      (err) => {
-        onChunk({ content: `**Error:** ${err.message}` });
-        resolve();
-      }
+      (err) => { onChunk(`**Error:** ${err.message}`); resolve(); }
     );
   });
 }
 
-export async function runPrompt(
-  prompt: string,
-  systemExtra?: string
-): Promise<string> {
-  const config = getConfig();
+export async function runPrompt(prompt: string, extra?: string): Promise<string> {
+  const cfg = getConfig();
+  if (!cfg.token) return '**Error:** AIA token is not set.';
 
-  if (!config.token) {
-    return '**Error:** AIA token is not set.';
-  }
+  const ctx = await getFullContext();
+  let question = `${ctxToPrompt(ctx)}\n\n---\n${prompt}`;
+  if (extra) question = `${extra}\n\n---\n${question}`;
 
-  let question = prompt;
-  if (systemExtra) {
-    question = `${systemExtra}\n\n---\n\n${prompt}`;
-  }
-
-  const ctx = getEditorContext();
-  if (ctx) {
-    question = `${buildContextString(ctx)}\n\n---\n\n${question}`;
-  }
-
-  const payload = {
-    code: 'direct_model',
-    question: question + '\n',
-    history: [],
-    kb_id: config.kbId,
-    chat_id: generateId(),
-    reasoning_model: config.reasoningModel ? 1 : 0,
-    web_search: config.webSearch ? 1 : 0,
-    regenerate: 0,
-    quote_message_id: '',
-  };
-
-  const headers: Record<string, string> = {
-    authorization: config.token,
-    referer: 'https://nfoprd-cn.aia.biz/',
-    'staff_assistant-header': 'staff_assistant',
-    'user-agent':
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0',
-  };
-
-  return new Promise((resolve) => {
-    let fullResponse = '';
-
-    streamRequest(
-      config.baseUrl,
-      payload,
-      headers,
-      config.verifySsl,
-      (event) => {
-        const gptResponse = event.gpt_response || '';
-        const msgType = event.message_type;
-        if (gptResponse && (msgType === 4 || msgType === 5)) {
-          fullResponse = gptResponse;
-        }
+  return new Promise(resolve => {
+    let full = '';
+    sse(
+      cfg.baseUrl, mkBody(question), mkHeaders(cfg.token), cfg.verifySsl,
+      (ev) => {
+        const txt = ev.gpt_response || '';
+        const mt = ev.message_type;
+        if (txt && (mt === 4 || mt === 5)) full = txt;
       },
       () => {
         addMessage({ role: 'user', content: prompt, timestamp: Date.now() });
-        addMessage({ role: 'assistant', content: fullResponse, timestamp: Date.now() });
-        resolve(fullResponse || '_(No response)_');
+        addMessage({ role: 'assistant', content: full, timestamp: Date.now() });
+        resolve(full || '_(No response)_');
       },
-      (err) => {
-        resolve(`**Error:** ${err.message}`);
-      }
+      (err) => resolve(`**Error:** ${err.message}`)
     );
   });
 }

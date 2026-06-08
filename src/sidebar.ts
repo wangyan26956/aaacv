@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { streamChat } from './claudeService';
-import { getEditorContext } from './contextProvider';
+import { getFullContext } from './contextProvider';
 import { setWebviewPoster } from './commands';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -46,25 +46,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     await streamChat(
       content,
-      (chunk) => {
-        webview.postMessage({ type: 'streamChunk', content: chunk.content });
-      },
-      (thinking) => {
-        webview.postMessage({ type: 'thinking', text: thinking });
-      }
+      (text) => webview.postMessage({ type: 'streamChunk', content: text }),
+      (text) => webview.postMessage({ type: 'thinking', text })
     );
 
     webview.postMessage({ type: 'endStream' });
   }
 
-  private _sendContext(webview: vscode.Webview): void {
-    const ctx = getEditorContext();
+  private async _sendContext(webview: vscode.Webview): Promise<void> {
+    const ctx = await getFullContext();
     if (ctx) {
-      webview.postMessage({
-        type: 'contextUpdate',
-        filePath: ctx.filePath,
-        language: ctx.language,
-      });
+      webview.postMessage({ type: 'contextUpdate', filePath: ctx.filePath, language: ctx.language });
     }
   }
 

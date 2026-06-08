@@ -1,48 +1,83 @@
 import * as vscode from 'vscode';
 
-export interface EditorContext {
+export interface FullContext {
   selectedText: string;
   filePath: string;
   language: string;
   workspaceRoot: string;
+  projectTree: string;
+  openFiles: string[];
 }
 
-export function getEditorContext(): EditorContext | null {
+async function scanProjectTree(root: vscode.Uri): Promise<string> {
+  const files = await vscode.workspace.findFiles(
+    new vscode.RelativePattern(root, '**/*.{js,jsx,ts,tsx,html,css,scss,py,java,cpp,go,php,vue,json}'),
+    new vscode.RelativePattern(root, '**/node_modules/**')
+  );
+  const lines = files.map(f => vscode.workspace.asRelativePath(f));
+  return lines.length ? lines.join('\n') : '';
+}
+
+export async function getFullContext(): Promise<FullContext> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
   const editor = vscode.window.activeTextEditor;
-  if (!editor) {
-    return null;
+
+  const openFiles: string[] = [];
+  for (const grp of vscode.window.tabGroups.all) {
+    for (const tab of grp.tabs) {
+      const input = tab.input as any;
+      if (input?.uri) {
+        openFiles.push(vscode.workspace.asRelativePath(input.uri));
+      }
+    }
   }
 
-  const doc = editor.document;
-  const selection = editor.selection;
-
-  return {
-    selectedText: selection.isEmpty
-      ? doc.getText()
-      : doc.getText(selection),
-    filePath: doc.uri.fsPath,
-    language: doc.languageId,
-    workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '',
+  const ctx: FullContext = {
+    filePath: editor ? vscode.workspace.asRelativePath(editor.document.uri) : '',
+    selectedText: '',
+    language: editor?.document.languageId ?? '',
+    workspaceRoot: workspaceRoot?.fsPath ?? '',
+    projectTree: '',
+    openFiles,
   };
+
+  if (editor) {
+    const sel = editor.selection;
+    ctx.selectedText = sel.isEmpty
+      ? editor.document.getText()
+      : editor.document.getText(sel);
+  }
+
+  if (workspaceRoot) {
+    ctx.projectTree = await scanProjectTree(workspaceRoot);
+  }
+
+  return ctx;
 }
 
-export function buildContextString(ctx: EditorContext): string {
-  const parts = [
-    `Current file: ${ctx.filePath}`,
-    `Language: ${ctx.language}`,
-  ];
+export function ctxToPrompt(ctx: FullContext): string {
+  const p: string[] = [];
 
   if (ctx.workspaceRoot) {
-    parts.push(`Workspace: ${ctx.workspaceRoot}`);
+    p.push(`Workspace: ${ctx.workspaceRoot}`);
   }
-
+  if (ctx.projectTree) {
+    p.push(`Project files:\n${ctx.projectTree}`);
+  }
+  if (ctx.openFiles.length > 0) {
+    p.push(`Open tabs: ${ctx.openFiles.join(', ')}`);
+  }
+  if (ctx.filePath) {
+    p.push(`Current file: ${ctx.filePath}`);
+    p.push(`Language: ${ctx.language}`);
+  }
   if (ctx.selectedText) {
-    const maxLen = 4000;
-    const text = ctx.selectedText.length > maxLen
-      ? ctx.selectedText.substring(0, maxLen) + '\n... (truncated)'
+    const cap = 4000;
+    const text = ctx.selectedText.length > cap
+      ? ctx.selectedText.substring(0, cap) + '\n... (truncated)'
       : ctx.selectedText;
-    parts.push(`\nCode context:\n\`\`\`${ctx.language}\n${text}\n\`\`\``);
+    p.push(`\nCode:\n\`\`\`${ctx.language}\n${text}\n\`\`\``);
   }
 
-  return parts.join('\n');
+  return p.join('\n');
 }
