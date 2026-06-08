@@ -16,410 +16,317 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       enableScripts: true,
       localResourceRoots: [this._extensionUri],
     };
-    webviewView.webview.html = this._html();
+    webviewView.webview.html = this._getHtml();
 
     setWebviewPoster((msg: any) => webviewView.webview.postMessage(msg));
 
-    webviewView.webview.onDidReceiveMessage(async (data) => {
+    webviewView.webview.onDidReceiveMessage(async (data: any) => {
       switch (data.type) {
         case 'sendMessage':
-          await this._handleChatMessage(data.content, webviewView.webview);
+          await this._onChat(data.content, webviewView.webview);
           break;
         case 'getContext':
-          await this._sendContext(webviewView.webview);
+          await this._onContext(webviewView.webview);
           break;
         case 'createFile':
-          await this._handleCreateFile(data.filePath, data.content, webviewView.webview);
+          await this._onCreateFile(data.path, data.content, webviewView.webview);
           break;
-        case 'createAllFiles':
-          await this._handleCreateAllFiles(data.files, webviewView.webview);
+        case 'createFiles':
+          await this._onCreateFiles(data.files, webviewView.webview);
           break;
       }
     });
   }
 
-  private async _handleChatMessage(content: string, webview: vscode.Webview): Promise<void> {
-    webview.postMessage({ type: 'addMessage', role: 'user', content });
-    webview.postMessage({ type: 'startStream' });
+  private async _onChat(content: string, webview: vscode.Webview): Promise<void> {
+    webview.postMessage({ type: 'addMsg', role: 'user', content });
+    webview.postMessage({ type: 'start' });
     try {
       await streamChat(
         content,
-        (text) => webview.postMessage({ type: 'streamChunk', content: text }),
-        (text) => webview.postMessage({ type: 'thinking', text })
+        (t) => webview.postMessage({ type: 'chunk', content: t }),
+        (t) => webview.postMessage({ type: 'think', text: t })
       );
     } catch (err: any) {
-      webview.postMessage({ type: 'streamChunk', content: '**Error:** ' + (err?.message || String(err)) });
+      webview.postMessage({ type: 'err', content: String(err?.message || err) });
     }
-    webview.postMessage({ type: 'endStream' });
+    webview.postMessage({ type: 'end' });
   }
 
-  private async _sendContext(webview: vscode.Webview): Promise<void> {
-    const ctx = await getFullContext();
-    if (ctx) {
-      webview.postMessage({ type: 'contextUpdate', filePath: ctx.filePath, language: ctx.language });
-    }
-  }
-
-  private async _handleCreateFile(filePath: string, content: string, webview: vscode.Webview): Promise<void> {
+  private async _onContext(webview: vscode.Webview): Promise<void> {
     try {
-      const absPath = await writeFile(filePath, content);
-      webview.postMessage({ type: 'fileCreated', filePath, absPath });
-      vscode.window.showInformationMessage(`Created: ${filePath}`);
+      const ctx = await getFullContext();
+      if (ctx) webview.postMessage({ type: 'ctx', filePath: ctx.filePath, language: ctx.language });
+    } catch { /* ignore */ }
+  }
+
+  private async _onCreateFile(path: string, content: string, webview: vscode.Webview): Promise<void> {
+    try {
+      await writeFile(path, content);
+      webview.postMessage({ type: 'ok', path });
+      vscode.window.showInformationMessage('Created: ' + path);
     } catch (err: any) {
-      webview.postMessage({ type: 'fileError', filePath, error: err.message });
-      vscode.window.showErrorMessage(`Failed: ${err.message}`);
+      webview.postMessage({ type: 'fail', path, error: err.message });
     }
   }
 
-  private async _handleCreateAllFiles(
-    files: { path: string; content: string }[],
-    webview: vscode.Webview
-  ): Promise<void> {
-    let created = 0;
+  private async _onCreateFiles(files: { path: string; content: string }[], webview: vscode.Webview): Promise<void> {
+    let ok = 0;
     for (const f of files) {
-      try {
-        await writeFile(f.path, f.content);
-        webview.postMessage({ type: 'fileCreated', filePath: f.path });
-        created++;
-      } catch (err: any) {
-        webview.postMessage({ type: 'fileError', filePath: f.path, error: err.message });
-      }
+      try { await writeFile(f.path, f.content); webview.postMessage({ type: 'ok', path: f.path }); ok++; }
+      catch (err: any) { webview.postMessage({ type: 'fail', path: f.path, error: err.message }); }
     }
-    vscode.window.showInformationMessage(`Created ${created}/${files.length} files.`);
+    vscode.window.showInformationMessage('Created ' + ok + '/' + files.length + ' files.');
   }
 
-  private _html(): string {
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+  private _getHtml(): string {
+    const tripleBacktick = String.raw`\x60\x60\x60`;
+    return String.raw`<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);color:var(--vscode-foreground);background:var(--vscode-sideBar-background);height:100vh;display:flex;flex-direction:column}
-#context-bar{padding:6px 10px;font-size:11px;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground);border-bottom:1px solid var(--vscode-panel-border);display:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#context-bar.visible{display:block}
-#messages{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:12px}
-.message{padding:8px 12px;border-radius:8px;max-width:100%;word-wrap:break-word;line-height:1.5;position:relative}
-.message.user{align-self:flex-end;background:var(--vscode-button-background);color:var(--vscode-button-foreground)}
-.message.assistant{align-self:flex-start;background:var(--vscode-editor-background);border:1px solid var(--vscode-panel-border)}
-.role-label{font-size:10px;font-weight:600;text-transform:uppercase;opacity:0.7;margin-bottom:4px}
-.message pre{background:var(--vscode-textCodeBlock-background);padding:10px;border-radius:4px;overflow-x:auto;margin:6px 0;font-size:12px}
-.message code{font-family:var(--vscode-editor-font-family,monospace);font-size:12px}
-.message :not(pre)>code{background:var(--vscode-textCodeBlock-background);padding:2px 4px;border-radius:3px}
-
-.code-actions{display:flex;gap:4px;margin-top:4px}
-.code-actions button{background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground);border:1px solid var(--vscode-panel-border);border-radius:3px;padding:3px 8px;cursor:pointer;font-size:11px}
-.code-actions button:hover{background:var(--vscode-button-secondaryHoverBackground)}
-.code-actions button.create-file-btn{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none}
-.code-actions button.create-file-btn:hover{background:var(--vscode-button-hoverBackground)}
-.code-actions button.done{background:var(--vscode-inputValidation-infoBackground);color:var(--vscode-inputValidation-infoForeground);cursor:default}
-.file-path-hint{font-size:11px;color:var(--vscode-descriptionForeground);margin-bottom:2px;font-family:var(--vscode-editor-font-family)}
-
-.all-files-bar{display:flex;gap:6px;align-items:center;padding:6px 10px;background:var(--vscode-badge-background);border-top:1px solid var(--vscode-panel-border)}
-.all-files-bar button{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;border-radius:3px;padding:3px 10px;cursor:pointer;font-size:11px}
-.all-files-bar button:hover{background:var(--vscode-button-hoverBackground)}
-.all-files-bar span{font-size:11px;color:var(--vscode-descriptionForeground)}
-
-.thinking-box{margin:8px 0;border:1px solid var(--vscode-panel-border);border-radius:6px;overflow:hidden;font-size:12px}
-.thinking-toggle{display:flex;align-items:center;gap:6px;width:100%;padding:6px 10px;background:var(--vscode-sideBar-background);border:none;color:var(--vscode-descriptionForeground);cursor:pointer;font-size:11px;font-family:var(--vscode-font-family)}
-.thinking-toggle:hover{background:var(--vscode-list-hoverBackground)}
-.thinking-toggle .arrow{display:inline-block;transition:transform .15s;font-size:10px}
-.thinking-toggle.open .arrow{transform:rotate(90deg)}
-.thinking-content{display:none;padding:8px 10px;background:var(--vscode-textCodeBlock-background);color:var(--vscode-descriptionForeground);max-height:200px;overflow-y:auto;white-space:pre-wrap;word-break:break-word;border-top:1px solid var(--vscode-panel-border);font-size:11px;line-height:1.5}
-.thinking-content.open{display:block}
-
-#input-area{border-top:1px solid var(--vscode-panel-border);padding:8px;display:flex;gap:6px}
-#input-area textarea{flex:1;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:4px;padding:8px;font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);resize:none;min-height:36px;max-height:120px}
-#input-area textarea:focus{outline:1px solid var(--vscode-focusBorder)}
-#input-area button{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;border-radius:4px;padding:0 14px;cursor:pointer;font-size:12px;white-space:nowrap}
-#input-area button:hover{background:var(--vscode-button-hoverBackground)}
-#input-area button:disabled{opacity:.5;cursor:not-allowed}
-.streaming .message.assistant:last-child{border-color:var(--vscode-focusBorder)}
-.empty-state{text-align:center;color:var(--vscode-descriptionForeground);padding:40px 20px;margin-top:40px}
-.empty-state h3{margin-bottom:8px}
-.empty-state p{font-size:12px;line-height:1.6}
-</style>
-</head>
-<body>
-<div id="context-bar"></div>
-<div id="messages">
-  <div class="empty-state" id="empty-state">
-    <h3>Code AI</h3>
-    <p>Ask me to build anything.<br>I can create files directly in your project.</p>
-  </div>
-</div>
-<div id="all-files-bar" class="all-files-bar" style="display:none">
-  <span id="all-files-count"></span>
-  <button id="write-all-btn">Write All Files</button>
-</div>
-<div id="input-area">
-  <textarea id="user-input" placeholder="e.g., Create a Python Flask API with user auth..." rows="1"></textarea>
-  <button id="send-btn">Send</button>
-</div>
+body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px);color:var(--vscode-foreground);background:var(--vscode-sideBar-background);height:100vh;display:flex;flex-direction:column}
+#bar{display:none;padding:4px 10px;font-size:11px;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground);border-bottom:1px solid var(--vscode-panel-border)}
+#bar.on{display:block}
+#msgs{flex:1;overflow-y:auto;padding:8px;display:flex;flex-direction:column;gap:8px}
+.m{position:relative;padding:7px 10px;border-radius:6px;max-width:100%;word-wrap:break-word;line-height:1.45}
+.m.u{align-self:flex-end;background:var(--vscode-button-background);color:var(--vscode-button-foreground)}
+.m.a{align-self:flex-start;background:var(--vscode-editor-background);border:1px solid var(--vscode-panel-border);white-space:pre-wrap}
+.m .l{font-size:10px;font-weight:600;text-transform:uppercase;opacity:.65;margin-bottom:3px}
+.cb{background:var(--vscode-textCodeBlock-background);padding:8px;border-radius:3px;overflow-x:auto;margin:5px 0;font-size:11px;font-family:var(--vscode-editor-font-family,monospace);white-space:pre}
+.acts{display:flex;gap:4px;margin-top:4px;flex-wrap:wrap}
+.acts button{background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground);border:1px solid var(--vscode-panel-border);border-radius:3px;padding:2px 7px;cursor:pointer;font-size:10px}
+.acts button:hover{background:var(--vscode-button-secondaryHoverBackground)}
+.acts .nf{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;font-weight:600}
+.acts .nf:hover{background:var(--vscode-button-hoverBackground)}
+.acts .done{background:var(--vscode-inputValidation-infoBackground);cursor:default;opacity:.7}
+#inp{border-top:1px solid var(--vscode-panel-border);padding:6px;display:flex;gap:5px}
+#inp textarea{flex:1;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:3px;padding:7px;font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px);resize:none;min-height:34px;max-height:100px}
+#inp textarea:focus{outline:1px solid var(--vscode-focusBorder)}
+#inp button{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;border-radius:3px;padding:0 12px;cursor:pointer;font-size:12px}
+#inp button:hover{background:var(--vscode-button-hoverBackground)}
+#inp button:disabled{opacity:.4}
+.emp{text-align:center;color:var(--vscode-descriptionForeground);padding:30px 15px;margin-top:30px}
+.emp h3{margin-bottom:6px;font-size:14px}
+.emp p{font-size:11px;line-height:1.5}
+.thk{margin:6px 0;border:1px solid var(--vscode-panel-border);border-radius:4px;overflow:hidden;font-size:11px}
+.thk-t{display:flex;align-items:center;gap:4px;width:100%;padding:4px 8px;background:var(--vscode-sideBar-background);border:none;color:var(--vscode-descriptionForeground);cursor:pointer;font-size:10px;font-family:inherit}
+.thk-t:hover{background:var(--vscode-list-hoverBackground)}
+.thk-t .ar{transition:transform .15s;font-size:9px}
+.thk-t.on .ar{transform:rotate(90deg)}
+.thk-b{display:none;padding:6px 8px;background:var(--vscode-textCodeBlock-background);color:var(--vscode-descriptionForeground);max-height:160px;overflow-y:auto;white-space:pre-wrap;word-break:break-word;border-top:1px solid var(--vscode-panel-border);font-size:10px;line-height:1.4}
+.thk-b.on{display:block}
+#pen{display:none;justify-content:space-between;align-items:center;padding:5px 8px;background:var(--vscode-badge-background);border-top:1px solid var(--vscode-panel-border)}
+#pen.on{display:flex}
+#pen span{font-size:10px;color:var(--vscode-descriptionForeground)}
+#pen button{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;border-radius:3px;padding:2px 8px;cursor:pointer;font-size:10px}
+</style></head><body>
+<div id="bar"></div>
+<div id="msgs"><div class="emp"><h3>Code AI</h3><p>Ask me to build anything.</p></div></div>
+<div id="pen"><span id="pcnt">0 pending</span><button id="wall">Write All</button></div>
+<div id="inp"><textarea id="uinput" placeholder="e.g., Create a Python web app..." rows="1"></textarea><button id="sbtn">Send</button></div>
 <script>
 (function(){
-var vscode = acquireVsCodeApi();
-var messagesEl = document.getElementById('messages');
-var inputEl = document.getElementById('user-input');
-var sendBtn = document.getElementById('send-btn');
-var contextBar = document.getElementById('context-bar');
-var emptyState = document.getElementById('empty-state');
-var allFilesBar = document.getElementById('all-files-bar');
-var allFilesCount = document.getElementById('all-files-count');
-var writeAllBtn = document.getElementById('write-all-btn');
-var streaming = false;
-var streamMsgEl = null;
+var V=acquireVsCodeApi();
+var msgs=document.getElementById('msgs');
+var uin=document.getElementById('uinput');
+var sbtn=document.getElementById('sbtn');
+var bar=document.getElementById('bar');
+var pen=document.getElementById('pen');
+var pcnt=document.getElementById('pcnt');
+var wall=document.getElementById('wall');
+var streaming=false;
+var cur=null;
 
-function escapeHtml(text) {
-  var div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
+function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML}
 
-function parseFileBlocks(text) {
-  var blocks = [];
-  var re = /###\\s*FILE:\\s*(\\S+)\\s*\\n\`\`\`(\\w*)\\n([\\s\\S]*?)\`\`\`/g;
-  var m;
-  while ((m = re.exec(text)) !== null) {
-    blocks.push({ path: m[1], lang: m[2], code: m[3].trim() });
-  }
-  return blocks;
-}
-
-function renderMarkdown(text) {
-  var html = text
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  // file blocks: ### FILE: path\n\`\`\`...\`\`\`
-  html = html.replace(/###\\s*FILE:\\s*(\\S+)\\s*\\n\`\`\`(\\w*)\\n([\\s\\S]*?)\`\`\`/g, function(_, path, lang, code) {
-    var cleanCode = escapeHtml(code.trim());
-    var langLabel = lang ? '<code style="font-size:10px;opacity:0.7">' + escapeHtml(lang) + '</code>' : '';
-    var fileLabel = escapeHtml(path);
-    return '<div class="file-path-hint">\u{1F4C4} ' + fileLabel + '</div>' +
-      '<pre data-file-path="' + escapeHtml(path) + '">' + langLabel + '<code>' + cleanCode + '</code></pre>' +
-      '<div class="code-actions">' +
-        '<button class="create-file-btn" data-path="' + escapeHtml(path) + '">Create File</button>' +
-        '<button class="copy-code-btn" data-path="' + escapeHtml(path) + '">Copy</button>' +
-      '</div>';
-  });
-  // regular code blocks
-  html = html.replace(/\`\`\`(\\w*)\\n?([\\s\\S]*?)\`\`\`/g, function(_, lang, code) {
-    var langLabel = lang ? '<code style="font-size:10px;opacity:0.7">' + escapeHtml(lang) + '</code>' : '';
-    return '<pre>' + langLabel + '<code>' + escapeHtml(code.trim()) + '</code></pre>' +
-      '<div class="code-actions">' +
-        '<button class="make-file-btn">Create File...</button>' +
-        '<button class="copy-code-btn">Copy</button>' +
-      '</div>';
-  });
-  html = html.replace(/\`([^\`]+)\`/g,'<code>$1</code>');
-  html = html.replace(/\\*\\*(.+?)\\*\\*/g,'<strong>$1</strong>');
-  html = html.replace(/\\*(.+?)\\*/g,'<em>$1</em>');
-  html = html.replace(/\\n/g,'<br>');
-  return html;
-}
-
-function getCodeFromPre(pre) {
-  var c = pre.querySelector('code');
-  return c ? c.textContent : '';
-}
-
-function updateAllFilesBar() {
-  var btns = messagesEl.querySelectorAll('.create-file-btn:not(.done)');
-  if (btns.length === 0) {
-    allFilesBar.style.display = 'none';
-    return;
-  }
-  allFilesBar.style.display = 'flex';
-  allFilesCount.textContent = btns.length + ' file(s) pending';
-}
-
-function addMessage(role, content) {
-  if (emptyState) { emptyState.remove(); emptyState = null; }
-  var div = document.createElement('div');
-  div.className = 'message ' + role;
-  var label = document.createElement('div');
-  label.className = 'role-label';
-  label.textContent = role === 'user' ? 'You' : 'AI';
-  div.appendChild(label);
-
-  var body = document.createElement('div');
-  body.className = 'message-body';
-  body.innerHTML = renderMarkdown(content);
-  div.appendChild(body);
-
-  // wire up file buttons
-  div.querySelectorAll('.create-file-btn').forEach(function(btn) {
-    var path = btn.getAttribute('data-path');
-    var pre = btn.closest('.code-actions').previousElementSibling;
-    btn.addEventListener('click', function() {
-      vscode.postMessage({ type: 'createFile', filePath: path, content: getCodeFromPre(pre) });
-      btn.classList.add('done');
-      btn.textContent = 'Created';
-      btn.disabled = true;
-      updateAllFilesBar();
-    });
-  });
-  div.querySelectorAll('.make-file-btn').forEach(function(btn) {
-    var pre = btn.closest('.code-actions').previousElementSibling;
-    btn.addEventListener('click', function() {
-      var p = prompt('File path (relative to workspace):');
-      if (p) {
-        vscode.postMessage({ type: 'createFile', filePath: p, content: getCodeFromPre(pre) });
-        btn.classList.add('done');
-        btn.textContent = 'Created';
-        btn.disabled = true;
-        updateAllFilesBar();
+function markdown(text){
+  // Simple: find code blocks using indexOf, no regex
+  var bt='` + tripleBacktick + `';
+  var result='';
+  var i=0;
+  var inCode=false;
+  var lang='';
+  while(true){
+    var pos=text.indexOf(bt,i);
+    if(pos===-1){
+      if(inCode){
+        result+='<div class="cb">'+esc(text.substring(i))+'</div>';
+      }else{
+        var t=text.substring(i).replace(/\n/g,'<br>');
+        // bold
+        t=t.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');
+        // italic
+        t=t.replace(/\*(.+?)\*/g,'<em>$1</em>');
+        // inline code
+        t=t.replace(/\x60([^\x60]+)\x60/g,'<code>$1</code>');
+        result+=t;
       }
-    });
-  });
-  div.querySelectorAll('.copy-code-btn').forEach(function(btn) {
-    var pre = btn.closest('.code-actions').previousElementSibling;
-    btn.addEventListener('click', function() {
-      navigator.clipboard.writeText(getCodeFromPre(pre));
-      btn.textContent = 'Copied!';
-      setTimeout(function(){ btn.textContent = 'Copy'; }, 1500);
-    });
-  });
-
-  messagesEl.appendChild(div);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
-  updateAllFilesBar();
-  return div;
+      break;
+    }
+    if(!inCode){
+      var t=text.substring(i,pos).replace(/\n/g,'<br>');
+      t=t.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');
+      t=t.replace(/\*(.+?)\*/g,'<em>$1</em>');
+      t=t.replace(/\x60([^\x60]+)\x60/g,'<code>$1</code>');
+      result+=t;
+      inCode=true;
+      i=pos+3;
+      // check for language hint
+      var nl=text.indexOf('\n',i);
+      if(nl!==-1&&nl<i+30&&nl===pos+3+text.substring(i,nl).length&&!text.substring(i,nl).includes(' ')){
+        lang=text.substring(i,nl);
+        i=nl+1;
+      }
+      result+='<div class="cb">';
+      if(lang)result+='<span style="font-size:10px;opacity:.6">'+esc(lang)+'</span>\n';
+    }else{
+      result+=esc(text.substring(i,pos))+'</div>';
+      inCode=false;
+      lang='';
+      i=pos+3;
+    }
+  }
+  if(inCode)result+='</div>';
+  return result;
 }
 
-writeAllBtn.addEventListener('click', function() {
-  var files = [];
-  messagesEl.querySelectorAll('.create-file-btn:not(.done)').forEach(function(btn) {
-    var path = btn.getAttribute('data-path');
-    var pre = btn.closest('.code-actions').previousElementSibling;
-    files.push({ path: path, content: getCodeFromPre(pre) });
-    btn.classList.add('done');
-    btn.textContent = 'Writing...';
-    btn.disabled = true;
-  });
-  if (files.length > 0) {
-    vscode.postMessage({ type: 'createAllFiles', files: files });
+function addMsg(role,text){
+  var e=msgs.querySelector('.emp');if(e)e.remove();
+  var d=document.createElement('div');
+  d.className='m '+(role==='user'?'u':'a');
+  var l=document.createElement('div');l.className='l';
+  l.textContent=role==='user'?'You':'AI';
+  d.appendChild(l);
+  var b=document.createElement('div');b.className='body';
+  b.innerHTML=markdown(text);
+  d.appendChild(b);
+  wireCodes(d);
+  msgs.appendChild(d);
+  msgs.scrollTop=msgs.scrollHeight;
+  return d
+}
+
+function wireCodes(msgDiv){
+  var cbs=msgDiv.querySelectorAll('.cb');
+  for(var j=0;j<cbs.length;j++){
+    var cb=cbs[j];
+    // skip if already has actions
+    if(cb.nextElementSibling&&cb.nextElementSibling.classList.contains('acts'))continue;
+    var codeText=cb.textContent||'';
+    // strip the lang label line if present
+    if(codeText.startsWith('\n'))codeText=codeText.substring(1);
+    var nl2=codeText.indexOf('\n');
+    if(nl2>0&&nl2<30&&!codeText.substring(0,nl2).includes(' ')&&codeText.substring(0,nl2).length<20){
+      codeText=codeText.substring(nl2+1);
+    }
+    // detect file path from preceding text
+    var fp='';
+    var prev=cb.previousElementSibling;
+    while(prev&&prev.tagName!=='DIV'||(prev&&!prev.classList.contains('cb')&&prev.tagName!=='HR')){
+      if(!prev){break}
+      prev=prev.previousElementSibling;
+    }
+    // check previous sibling for file path hint
+    var pp=cb.parentElement;
+    var all=pp.innerHTML;
+    var idx=all.indexOf('>'+cb.outerHTML);
+    if(idx===-1)idx=all.indexOf(cb.outerHTML);
+    if(idx>0){
+      var before=all.substring(Math.max(0,idx-300),idx);
+      var fm=before.match(/FILE[:\s]+(\S+)/);
+      if(fm)fp=fm[1];
+    }
+
+    var acts=document.createElement('div');acts.className='acts';
+    var nb=document.createElement('button');nb.className='nf';
+    nb.textContent=fp?'Create: '+fp:'Create File...';
+    (function(p,code){
+      nb.addEventListener('click',function(){
+        var pp=p||prompt('Path:');
+        if(!pp)return;
+        V.postMessage({type:'createFile',path:pp,content:code});
+        nb.disabled=true;nb.className='done';nb.textContent='Created';updPen();
+      });
+    })(fp,codeText);
+    acts.appendChild(nb);
+    var cp=document.createElement('button');cp.textContent='Copy';
+    cp.addEventListener('click',function(){
+      navigator.clipboard.writeText(codeText);cp.textContent='Copied!';
+      setTimeout(function(){cp.textContent='Copy'},1500);
+    });
+    acts.appendChild(cp);
+    cb.insertAdjacentElement('afterend',acts);
   }
-  updateAllFilesBar();
+}
+
+function updPen(){
+  var btns=msgs.querySelectorAll('.nf:not(.done):not(:disabled)');
+  if(btns.length===0){pen.classList.remove('on')}
+  else{pen.classList.add('on');pcnt.textContent=btns.length+' pending'}
+}
+
+function addThink(t){
+  if(!cur)return;
+  var ex=cur.querySelector('.thk');
+  if(ex){ex.querySelector('.thk-b').textContent=t;ex.querySelector('.thk-b').scrollTop=9999}
+  else{
+    var box=document.createElement('div');box.className='thk';
+    box.innerHTML='<button class="thk-t on"><span class="ar">&#9654;</span> Thinking</button><div class="thk-b on">'+esc(t)+'</div>';
+    box.querySelector('.thk-t').addEventListener('click',function(){
+      var on=box.querySelector('.thk-b').classList.toggle('on');
+      box.querySelector('.thk-t').classList.toggle('on',on);
+    });
+    cur.querySelector('.body').appendChild(box);
+  }
+  msgs.scrollTop=msgs.scrollHeight
+}
+
+function sendMsg(){
+  var t=uin.value.trim();if(!t||streaming)return;
+  uin.value='';streaming=true;sbtn.disabled=true;
+  V.postMessage({type:'sendMessage',content:t});
+}
+
+sbtn.addEventListener('click',sendMsg);
+uin.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMsg()}});
+
+wall.addEventListener('click',function(){
+  var files=[];
+  msgs.querySelectorAll('.nf:not(.done):not(:disabled)').forEach(function(btn){
+    var cb=btn.parentElement.previousElementSibling;
+    var code=cb.textContent||'';
+    var nl=code.indexOf('\n');
+    if(nl>0&&nl<30&&!code.substring(0,nl).includes(' '))code=code.substring(nl+1);
+    var p='';
+    if(btn.textContent.startsWith('Create: '))p=btn.textContent.slice(8);
+    if(!p){p=prompt('Path:');if(!p)return}
+    files.push({path:p,content:code});
+    btn.disabled=true;btn.className='done';btn.textContent='Writing...';
+  });
+  if(files.length>0)V.postMessage({type:'createFiles',files:files});
+  updPen()
 });
 
-function insertThinking(thinkingText) {
-  if (!streamMsgEl) return;
-  var existing = streamMsgEl.querySelector('.thinking-box');
-  if (existing) {
-    var content = existing.querySelector('.thinking-content');
-    content.textContent = thinkingText;
-    content.scrollTop = content.scrollHeight;
-  } else {
-    var box = document.createElement('div');
-    box.className = 'thinking-box';
-    box.innerHTML =
-      '<button class="thinking-toggle open"><span class="arrow">▶</span> Thinking...</button>' +
-      '<div class="thinking-content open">' + escapeHtml(thinkingText) + '</div>';
-    var toggle = box.querySelector('.thinking-toggle');
-    var content = box.querySelector('.thinking-content');
-    toggle.addEventListener('click', function() {
-      var isOpen = content.classList.toggle('open');
-      toggle.classList.toggle('open', isOpen);
-    });
-    streamMsgEl.querySelector('.message-body').appendChild(box);
-  }
-  messagesEl.scrollTop = messagesEl.scrollHeight;
-}
-
-function sendMessage() {
-  var text = inputEl.value.trim();
-  if (!text || streaming) return;
-  inputEl.value = '';
-  streaming = true;
-  sendBtn.disabled = true;
-  vscode.postMessage({ type: 'sendMessage', content: text });
-}
-
-sendBtn.addEventListener('click', sendMessage);
-inputEl.addEventListener('keydown', function(e) {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-});
-
-window.addEventListener('message', function(event) {
-  var msg = event.data;
-  switch (msg.type) {
-    case 'addMessage':
-      addMessage(msg.role, msg.content);
-      break;
-    case 'clearMessages':
-      messagesEl.innerHTML = '<div class="empty-state" id="empty-state"><h3>Code AI</h3><p>Ask me to build anything.</p></div>';
-      emptyState = document.getElementById('empty-state');
-      allFilesBar.style.display = 'none';
-      break;
-    case 'startStream':
-      messagesEl.classList.add('streaming');
-      streamMsgEl = addMessage('assistant', '');
-      break;
-    case 'streamChunk':
-      if (streamMsgEl) {
-        var body = streamMsgEl.querySelector('.message-body');
-        var current = body.getAttribute('data-raw') || '';
-        current += msg.content;
-        body.setAttribute('data-raw', current);
-        body.innerHTML = renderMarkdown(current);
-        // re-wire buttons
-        streamMsgEl.querySelectorAll('.create-file-btn').forEach(function(btn) {
-          var path = btn.getAttribute('data-path');
-          var pre = btn.closest('.code-actions').previousElementSibling;
-          btn.onclick = function() {
-            vscode.postMessage({ type: 'createFile', filePath: path, content: getCodeFromPre(pre) });
-            btn.classList.add('done');
-            btn.textContent = 'Created';
-            btn.disabled = true;
-            updateAllFilesBar();
-          };
-        });
-        messagesEl.scrollTop = messagesEl.scrollHeight;
-      }
-      break;
-    case 'thinking':
-      insertThinking(msg.text);
-      break;
-    case 'endStream':
-      streaming = false;
-      sendBtn.disabled = false;
-      messagesEl.classList.remove('streaming');
-      if (streamMsgEl) updateAllFilesBar();
-      streamMsgEl = null;
-      break;
-    case 'streamError':
-      if (streamMsgEl) {
-        streamMsgEl.querySelector('.message-body').innerHTML =
-          '<span style="color:var(--vscode-errorForeground)">' + escapeHtml(msg.content) + '</span>';
-      }
-      streaming = false;
-      sendBtn.disabled = false;
-      messagesEl.classList.remove('streaming');
-      streamMsgEl = null;
-      break;
-    case 'fileCreated':
-      var btns = messagesEl.querySelectorAll('.create-file-btn[data-path="' + msg.filePath + '"]');
-      btns.forEach(function(b) { b.classList.add('done'); b.textContent = 'Created'; b.disabled = true; });
-      updateAllFilesBar();
-      break;
-    case 'fileError':
-      var ebtns = messagesEl.querySelectorAll('.create-file-btn[data-path="' + msg.filePath + '"]');
-      ebtns.forEach(function(b) { b.classList.add('done'); b.textContent = 'Error'; });
-      updateAllFilesBar();
-      break;
-    case 'contextUpdate':
-      contextBar.className = 'visible';
-      contextBar.textContent = msg.language + ' | ' + msg.filePath;
-      break;
+window.addEventListener('message',function(e){
+  var d=e.data;
+  switch(d.type){
+    case'addMsg':addMsg(d.role,d.content);break;
+    case'clear':msgs.innerHTML='<div class="emp"><h3>Code AI</h3><p>Ask me to build anything.</p></div>';break;
+    case'start':cur=addMsg('assistant','');break;
+    case'chunk':if(cur){var b=cur.querySelector('.body');var raw=b.getAttribute('data-raw')||'';raw+=d.content;b.setAttribute('data-raw',raw);b.innerHTML=markdown(raw);wireCodes(cur);msgs.scrollTop=msgs.scrollHeight}break;
+    case'think':addThink(d.text);break;
+    case'end':streaming=false;sbtn.disabled=false;if(cur){wireCodes(cur);updPen()}cur=null;break;
+    case'err':if(cur){cur.querySelector('.body').innerHTML='<span style="color:var(--vscode-errorForeground)">'+esc(d.content)+'</span>'}streaming=false;sbtn.disabled=false;cur=null;break;
+    case'ctx':bar.classList.add('on');bar.textContent=(d.language||'')+' | '+(d.filePath||'');break;
+    case'ok':msgs.querySelectorAll('.nf').forEach(function(b){if(b.textContent==='Create: '+d.path){b.className='done';b.textContent='Created';b.disabled=true}});updPen();break;
+    case'fail':msgs.querySelectorAll('.nf').forEach(function(b){if(b.textContent==='Create: '+d.path){b.textContent='Error'}});updPen();break;
   }
 });
 
-vscode.postMessage({ type: 'getContext' });
+V.postMessage({type:'getContext'});
 })();
-</script>
-</body>
-</html>`;
+</script></body></html>`;
   }
 }
