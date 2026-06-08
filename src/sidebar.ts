@@ -41,8 +41,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     content: string,
     webview: vscode.Webview
   ): Promise<void> {
-    webview.postMessage({ type: 'addMessage', role: 'user', content });
-
     webview.postMessage({ type: 'startStream' });
 
     await streamChat(
