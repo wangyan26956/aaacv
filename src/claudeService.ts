@@ -4,6 +4,20 @@ import { getConfig } from './config';
 import { addMessage } from './chatHistory';
 import { getFullContext, ctxToPrompt } from './contextProvider';
 
+const FILE_SYSTEM_INSTRUCTION = `
+You are an AI coding assistant that can CREATE and MODIFY files in the user's project.
+When you want to create or overwrite a file, use this exact format:
+
+### FILE: relative/path/to/file.ts
+\`\`\`language
+// file content here
+\`\`\`
+
+The user will see a [Create File] button for each code block. They expect you to actually write complete, working code files.
+Always output the full file content, not partial or placeholder code.
+When creating a project, output ALL necessary files in one response using multiple ### FILE: blocks.
+`.trim();
+
 function genId(): string {
   return 'xxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx'.replace(/[xy]/g, c => {
     const r = (Math.random() * 16) | 0;
@@ -95,7 +109,7 @@ export async function streamChat(
 
   const ctx = await getFullContext();
   const prompt = ctxToPrompt(ctx);
-  const question = `${prompt}\n\n---\nUser: ${userMessage}`;
+  const question = `Instructions:\n${FILE_SYSTEM_INSTRUCTION}\n\nProject context:\n${prompt}\n\n---\nUser: ${userMessage}`;
 
   return new Promise(resolve => {
     let full = '';
@@ -126,7 +140,7 @@ export async function runPrompt(prompt: string, extra?: string): Promise<string>
   if (!cfg.token) return '**Error:** AIA token is not set.';
 
   const ctx = await getFullContext();
-  let question = `${ctxToPrompt(ctx)}\n\n---\n${prompt}`;
+  let question = `Instructions:\n${FILE_SYSTEM_INSTRUCTION}\n\nProject context:\n${ctxToPrompt(ctx)}\n\n---\n${prompt}`;
   if (extra) question = `${extra}\n\n---\n${question}`;
 
   return new Promise(resolve => {
