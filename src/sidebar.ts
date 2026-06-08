@@ -41,6 +41,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     content: string,
     webview: vscode.Webview
   ): Promise<void> {
+    webview.postMessage({ type: 'addMessage', role: 'user', content });
     webview.postMessage({ type: 'startStream' });
 
     await streamChat(
@@ -362,8 +363,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       var text = inputEl.value.trim();
       if (!text || streaming) return;
       inputEl.value = '';
-      addMessage('user', text);
-      messagesEl.classList.add('streaming');
       streaming = true;
       sendBtn.disabled = true;
       vscode.postMessage({ type: 'sendMessage', content: text });
@@ -390,6 +389,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           messagesEl.appendChild(clone);
           break;
         case 'startStream':
+          messagesEl.classList.add('streaming');
           streamMsgEl = addMessage('assistant', '');
           break;
         case 'streamChunk':
