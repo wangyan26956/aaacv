@@ -10,12 +10,16 @@ export interface FullContext {
 }
 
 async function scanProjectTree(root: vscode.Uri): Promise<string> {
-  const files = await vscode.workspace.findFiles(
-    new vscode.RelativePattern(root, '**/*.{js,jsx,ts,tsx,html,css,scss,py,java,cpp,go,php,vue,json}'),
-    new vscode.RelativePattern(root, '**/node_modules/**')
-  );
-  const lines = files.map(f => vscode.workspace.asRelativePath(f));
-  return lines.length ? lines.join('\n') : '';
+  try {
+    const files = await vscode.workspace.findFiles(
+      '**/*.{js,jsx,ts,tsx,html,css,scss,py,java,cpp,go,php,vue,json}',
+      '{**/node_modules/**,**/.git/**}'
+    );
+    const lines = files.map(f => vscode.workspace.asRelativePath(f));
+    return lines.length ? lines.join('\n') : '';
+  } catch {
+    return '';
+  }
 }
 
 export async function getFullContext(): Promise<FullContext> {
@@ -23,14 +27,16 @@ export async function getFullContext(): Promise<FullContext> {
   const editor = vscode.window.activeTextEditor;
 
   const openFiles: string[] = [];
-  for (const grp of vscode.window.tabGroups.all) {
-    for (const tab of grp.tabs) {
-      const input = tab.input as any;
-      if (input?.uri) {
-        openFiles.push(vscode.workspace.asRelativePath(input.uri));
+  try {
+    for (const grp of vscode.window.tabGroups.all) {
+      for (const tab of grp.tabs) {
+        const input = tab.input as any;
+        if (input?.uri) {
+          openFiles.push(vscode.workspace.asRelativePath(input.uri));
+        }
       }
     }
-  }
+  } catch { /* ignore */ }
 
   const ctx: FullContext = {
     filePath: editor ? vscode.workspace.asRelativePath(editor.document.uri) : '',
@@ -42,10 +48,12 @@ export async function getFullContext(): Promise<FullContext> {
   };
 
   if (editor) {
-    const sel = editor.selection;
-    ctx.selectedText = sel.isEmpty
-      ? editor.document.getText()
-      : editor.document.getText(sel);
+    try {
+      const sel = editor.selection;
+      ctx.selectedText = sel.isEmpty
+        ? editor.document.getText()
+        : editor.document.getText(sel);
+    } catch { /* ignore */ }
   }
 
   if (workspaceRoot) {

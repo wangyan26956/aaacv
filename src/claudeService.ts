@@ -107,9 +107,14 @@ export async function streamChat(
     return;
   }
 
-  const ctx = await getFullContext();
-  const prompt = ctxToPrompt(ctx);
-  const question = `Instructions:\n${FILE_SYSTEM_INSTRUCTION}\n\nProject context:\n${prompt}\n\n---\nUser: ${userMessage}`;
+  let question = `Instructions:\n${FILE_SYSTEM_INSTRUCTION}\n\nUser: ${userMessage}`;
+  try {
+    const ctx = await getFullContext();
+    const prompt = ctxToPrompt(ctx);
+    question = `Instructions:\n${FILE_SYSTEM_INSTRUCTION}\n\nProject context:\n${prompt}\n\n---\nUser: ${userMessage}`;
+  } catch {
+    // continue without context
+  }
 
   return new Promise(resolve => {
     let full = '';
@@ -139,8 +144,12 @@ export async function runPrompt(prompt: string, extra?: string): Promise<string>
   const cfg = getConfig();
   if (!cfg.token) return '**Error:** AIA token is not set.';
 
-  const ctx = await getFullContext();
-  let question = `Instructions:\n${FILE_SYSTEM_INSTRUCTION}\n\nProject context:\n${ctxToPrompt(ctx)}\n\n---\n${prompt}`;
+  let question = `Instructions:\n${FILE_SYSTEM_INSTRUCTION}\n\n${prompt}`;
+  try {
+    const ctx = await getFullContext();
+    const ctxStr = ctxToPrompt(ctx);
+    question = `Instructions:\n${FILE_SYSTEM_INSTRUCTION}\n\nProject context:\n${ctxStr}\n\n---\n${prompt}`;
+  } catch { /* continue without context */ }
   if (extra) question = `${extra}\n\n---\n${question}`;
 
   return new Promise(resolve => {

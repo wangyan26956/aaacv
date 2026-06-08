@@ -41,11 +41,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async _handleChatMessage(content: string, webview: vscode.Webview): Promise<void> {
     webview.postMessage({ type: 'addMessage', role: 'user', content });
     webview.postMessage({ type: 'startStream' });
-    await streamChat(
-      content,
-      (text) => webview.postMessage({ type: 'streamChunk', content: text }),
-      (text) => webview.postMessage({ type: 'thinking', text })
-    );
+    try {
+      await streamChat(
+        content,
+        (text) => webview.postMessage({ type: 'streamChunk', content: text }),
+        (text) => webview.postMessage({ type: 'thinking', text })
+      );
+    } catch (err: any) {
+      webview.postMessage({ type: 'streamChunk', content: '**Error:** ' + (err?.message || String(err)) });
+    }
     webview.postMessage({ type: 'endStream' });
   }
 
