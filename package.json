@@ -1,0 +1,158 @@
+{
+  "name": "claude-code-vscode",
+  "displayName": "Code AI",
+  "description": "内网 AI 编程助手 — 聊天、解释代码、重构、生成代码，支持上下文感知",
+  "version": "1.0.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Chat",
+    "Programming Languages",
+    "Machine Learning"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claude-code-sidebar",
+          "title": "Code AI",
+          "icon": "resources/claude-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "claude-code-sidebar": [
+        {
+          "type": "webview",
+          "id": "claudeCode.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "claudeCode.explainCode",
+        "title": "Code AI: Explain Selected Code"
+      },
+      {
+        "command": "claudeCode.generateCode",
+        "title": "Code AI: Generate Code"
+      },
+      {
+        "command": "claudeCode.refactor",
+        "title": "Code AI: Refactor Selected Code"
+      },
+      {
+        "command": "claudeCode.fixBug",
+        "title": "Code AI: Fix Bug in Selected Code"
+      },
+      {
+        "command": "claudeCode.reviewCode",
+        "title": "Code AI: Review Selected Code"
+      },
+      {
+        "command": "claudeCode.addTests",
+        "title": "Code AI: Generate Tests for Selected Code"
+      },
+      {
+        "command": "claudeCode.newChat",
+        "title": "Code AI: New Chat"
+      },
+      {
+        "command": "claudeCode.clearHistory",
+        "title": "Code AI: Clear Chat History"
+      },
+      {
+        "command": "claudeCode.openChat",
+        "title": "Code AI: Open Chat Panel"
+      },
+      {
+        "command": "claudeCode.toggleChat",
+        "title": "Code AI: Toggle Chat Panel"
+      }
+    ],
+    "configuration": {
+      "title": "Code AI",
+      "properties": {
+        "claudeCode.token": {
+          "type": "string",
+          "default": "",
+          "description": "认证 Token (JWT)"
+        },
+        "claudeCode.baseUrl": {
+          "type": "string",
+          "default": "https://jvs-cn.aia.biz/p/staff_assistant/baixiaosheng/model_ask_question",
+          "description": "API 地址"
+        },
+        "claudeCode.kbId": {
+          "type": "string",
+          "default": "deepseek",
+          "description": "知识库 ID"
+        },
+        "claudeCode.reasoningModel": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用推理模型"
+        },
+        "claudeCode.webSearch": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用联网搜索"
+        },
+        "claudeCode.verifySsl": {
+          "type": "boolean",
+          "default": false,
+          "description": "验证 SSL 证书（内网环境建议关闭）"
+        },
+        "claudeCode.showThinking": {
+          "type": "boolean",
+          "default": false,
+          "description": "在回复中显示模型思考过程"
+        },
+        "claudeCode.maxHistoryLength": {
+          "type": "number",
+          "default": 50,
+          "description": "最大历史消息数"
+        }
+      }
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "claudeCode.explainCode",
+          "group": "claude"
+        },
+        {
+          "command": "claudeCode.refactor",
+          "group": "claude"
+        },
+        {
+          "command": "claudeCode.fixBug",
+          "group": "claude"
+        },
+        {
+          "command": "claudeCode.reviewCode",
+          "group": "claude"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "webpack --mode production",
+    "compile": "webpack --mode development",
+    "watch": "webpack --mode development --watch",
+    "lint": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.3.3",
+    "webpack": "^5.89.0",
+    "webpack-cli": "^5.1.4"
+  },
+  "dependencies": {}
+}
