@@ -127,9 +127,9 @@ function callAia(question: string, history: any[], onData: (c: string) => void, 
   doRequest(AIA_BASE_URL, 2);
 }
 
-function makeTranslator(res: http.ServerResponse, onDone: () => void): (raw: string) => void {
+function makeTranslator(res: http.ServerResponse, msgId: string, onDone: () => void): (raw: string) => void {
   let buf = '', fullText = '', fullThink = '', textIdx = -1, thinkIdx = -1;
-  let firstToken = true;
+  let totalTokens = 0;
 
   const flushThink = () => { if (thinkIdx >= 0) { res.write(`event: content_block_stop\ndata: {"type":"content_block_stop","index":${thinkIdx}}\n\n`); thinkIdx = -1; } };
   const flushText = () => { if (textIdx >= 0) { res.write(`event: content_block_stop\ndata: {"type":"content_block_stop","index":${textIdx}}\n\n`); textIdx = -1; } };
@@ -141,25 +141,29 @@ function makeTranslator(res: http.ServerResponse, onDone: () => void): (raw: str
       const p = line.slice(6).trim();
       if (DEBUG) hdr('AIA SSE:', p.slice(0, 200));
       if (p === '[DONE]') {
-        if (firstToken) { hdr('WARN: AIA returned [DONE] with 0 tokens!'); }
         flushThink(); flushText();
-        res.write(`event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":0,"output_tokens":0}}\n\n`);
-        res.write(`event: message_stop\ndata: {"type":"message_stop"}\n\n`);
+        const outTokens = totalTokens || Math.ceil(fullText.length / 2.5);
+        res.write(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { input_tokens: 0, output_tokens: outTokens } })}\n\n`);
+        res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
         return onDone();
       }
       try {
         const ev = JSON.parse(p);
+        const mt = ev.message_type;
         const think = ev.thinking || '';
-        const text = ev.gpt_response || '';
+        const rawText: string = ev.gpt_response || '';
+
+        // Only emit text when message_type is 4 or 5 (matches AIA client logic)
+        const text = (mt === 4 || mt === 5) ? rawText : '';
+        // Track total tokens from the final event if available
+        if (ev.total_tokens) totalTokens = ev.total_tokens;
         if (think && think !== fullThink) {
-          firstToken = false;
           const d = think.slice(fullThink.length); if (!d) continue;
           if (thinkIdx < 0) { thinkIdx = 0; res.write(`event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n`); }
           res.write(`event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":${JSON.stringify(d)}}}\n\n`);
           fullThink = think;
         }
         if (text && text !== fullText) {
-          firstToken = false;
           const d = text.slice(fullText.length); if (!d) continue;
           if (thinkIdx >= 0) flushThink();
           if (textIdx < 0) { textIdx = 1; res.write(`event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}\n\n`); }
@@ -263,9 +267,16 @@ const server = http.createServer((req, res) => {
 
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
 
+      // Anthropic Messages API requires message_start as the very first event
+      const msgId = 'msg_' + genId();
+      res.write(`event: message_start\ndata: ${JSON.stringify({
+        type: 'message_start',
+        message: { id: msgId, type: 'message', role: 'assistant', content: [], model: PROXY_MODEL, stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } },
+      })}\n\n`);
+
       const { question, history } = convertMessages(parsed);
 
-      const onData = makeTranslator(res, () => { hdr(`#${n} stream done`); res.end(); });
+      const onData = makeTranslator(res, msgId, () => { hdr(`#${n} stream done`); res.end(); });
       callAia(question, history, onData,
         () => { hdr(`#${n} AIA closed`); res.end(); },
         err => {
