@@ -18,12 +18,20 @@ const AIA_BASE_URL = process.env.AIA_BASE_URL || 'https://jvs-cn.aia.biz/p/staff
 const AIA_KB_ID = process.env.AIA_KB_ID || 'deepseek';
 const PROXY_MODEL = 'claude-sonnet-4-6';
 const PORT = parseInt(process.env.PROXY_PORT || '9999', 10);
+const DEBUG = process.env.DEBUG === '1';
 
 function genId(): string {
   return 'xxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx'.replace(/[xy]/g, c => {
     const r = (Math.random() * 16) | 0;
     return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
   });
+}
+
+// Strip Anthropic billing/metadata headers injected into system prompt
+function cleanSystemText(s: string): string {
+  return s.replace(/^x-anthropic-billing-header:[^\n]*\n?/gm, '')
+          .replace(/^anthropic-beta:[^\n]*\n?/gm, '')
+          .replace(/^anthropic-version:[^\n]*\n?/gm, '');
 }
 
 function extractText(content: unknown): string {
@@ -43,9 +51,11 @@ function extractText(content: unknown): string {
 function convertMessages(body: any): { question: string; history: any[] } {
   const parts: string[] = [];
   const system = body.system;
-  if (typeof system === 'string') parts.push(system);
+  if (typeof system === 'string') parts.push(cleanSystemText(system));
   else if (Array.isArray(system)) {
-    for (const b of system) { if (b.type === 'text') parts.push(b.text); }
+    for (const b of system) {
+      if (b.type === 'text') { const cleaned = cleanSystemText(b.text); if (cleaned) parts.push(cleaned); }
+    }
   }
   if (Array.isArray(body.tools)) {
     parts.push('\nAvailable tools:\n' + body.tools.map((t: any) =>
@@ -92,6 +102,7 @@ function makeTranslator(res: http.ServerResponse, onDone: () => void): (raw: str
       }
       try {
         const ev = JSON.parse(p);
+        if (DEBUG) console.log('[proxy] AIA event:', JSON.stringify(ev).slice(0, 200));
         const think = ev.thinking || '';
         const text = ev.gpt_response || '';
         if (think && think !== fullThink) {
@@ -190,10 +201,12 @@ const server = http.createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
 
       const { question, history } = convertMessages(parsed);
-      console.log(`[proxy] q: ${question.slice(0, 100)}...`);
+      console.log(`[proxy] q(${question.length}c): ${question.slice(0, 120).replace(/\n/g, '\\n')}...`);
 
-      const onData = makeTranslator(res, () => res.end());
-      callAia(question, history, onData, () => {}, err => {
+      const onData = makeTranslator(res, () => { console.log('[proxy] AIA stream done'); res.end(); });
+      callAia(question, history, onData,
+        () => { console.log('[proxy] AIA connection closed'); res.end(); },
+        err => {
         console.error('[proxy] AIA error:', err.message);
         res.write(`event: error\ndata: {"type":"error","error":{"message":${JSON.stringify(err.message)}}}\n\n`);
         res.end();
