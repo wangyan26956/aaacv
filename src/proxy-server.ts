@@ -83,23 +83,48 @@ function convertMessages(body: any): { question: string; history: any[] } {
 
 function callAia(question: string, history: any[], onData: (c: string) => void, onEnd: () => void, onErr: (e: Error) => void): void {
   const payload = JSON.stringify({ code: 'direct_model', question: question + '\n', history, kb_id: AIA_KB_ID, chat_id: genId(), reasoning_model: 1, web_search: 0, regenerate: 0, quote_message_id: '' });
-  const u = new URL(AIA_BASE_URL);
-  hdr(`AIA request -> ${u.hostname}:${u.port || (u.protocol === 'https:' ? 443 : 80)} (${payload.length}b)`);
-  const t = u.protocol === 'https:' ? https : http;
-  const req = t.request({
-    hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80),
-    path: u.pathname + u.search, method: 'POST', rejectUnauthorized: false, timeout: TIMEOUT,
-    headers: { authorization: AIA_TOKEN, referer: 'https://nfoprd-cn.aia.biz/', 'staff_assistant-header': 'staff_assistant', 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-  }, res => {
-    hdr(`AIA response: ${res.statusCode}`);
-    res.on('data', (c: Buffer) => onData(c.toString()));
-    res.on('end', () => { hdr('AIA response end'); onEnd(); });
-    res.on('error', e => { hdr('AIA response error:', e.message); onErr(e); });
-  });
-  req.on('timeout', () => { req.destroy(); onErr(new Error('AIA request timeout')); });
-  req.on('error', e => { hdr('AIA request error:', e.message); onErr(e); });
-  req.write(payload);
-  req.end();
+  const headers = { authorization: AIA_TOKEN, referer: 'https://nfoprd-cn.aia.biz/', 'staff_assistant-header': 'staff_assistant', 'Content-Type': 'application/json', Accept: 'text/event-stream' };
+
+  function doRequest(urlStr: string, maxRedirects: number): void {
+    const u = new URL(urlStr);
+    hdr(`AIA request -> ${u.hostname}:${u.port || 443} (${payload.length}b)`);
+    const t = u.protocol === 'https:' ? https : http;
+    const req = t.request({
+      hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + u.search, method: 'POST', rejectUnauthorized: false, timeout: TIMEOUT,
+      headers,
+    }, res => {
+      const code = res.statusCode || 0;
+      hdr(`AIA response: ${code}`);
+
+      // Follow redirects
+      if (code >= 300 && code < 400 && maxRedirects > 0 && res.headers.location) {
+        const loc = res.headers.location;
+        hdr(`AIA redirect -> ${loc}`);
+        // Drain and follow
+        res.on('data', () => {});
+        res.on('end', () => doRequest(loc, maxRedirects - 1));
+        return;
+      }
+
+      if (code !== 200) {
+        let errBody = '';
+        res.on('data', (c: Buffer) => errBody += c.toString());
+        res.on('end', () => { hdr(`AIA error ${code}: ${errBody.slice(0, 200)}`); onErr(new Error(`AIA returned ${code}`)); });
+        return;
+      }
+
+      res.on('data', (c: Buffer) => onData(c.toString()));
+      res.on('end', () => { hdr('AIA response end'); onEnd(); });
+      res.on('error', e => { hdr('AIA response error:', e.message); onErr(e); });
+    });
+    req.on('timeout', () => { req.destroy(); onErr(new Error('AIA request timeout')); });
+    req.on('error', e => { hdr('AIA request error:', e.message); onErr(e); });
+    req.write(payload);
+    req.end();
+  }
+
+  doRequest(AIA_BASE_URL, 2);
 }
 
 function makeTranslator(res: http.ServerResponse, onDone: () => void): (raw: string) => void {
