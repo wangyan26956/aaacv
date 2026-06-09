@@ -149,10 +149,13 @@
   },
   "devDependencies": {
     "@types/vscode": "^1.85.0",
+    "copy-webpack-plugin": "^14.0.0",
     "ts-loader": "^9.5.1",
     "typescript": "^5.3.3",
     "webpack": "^5.89.0",
     "webpack-cli": "^5.1.4"
   },
-  "dependencies": {}
+  "dependencies": {
+    "marked": "^18.0.5"
+  }
 }

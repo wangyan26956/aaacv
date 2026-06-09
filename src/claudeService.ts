@@ -1,8 +1,9 @@
-import * as https from 'https';
-import * as http from 'http';
 import { getConfig } from './config';
 import { addMessage } from './chatHistory';
 import { getFullContext, ctxToPrompt } from './contextProvider';
+import { classifyError, getRetryDelay, sleep } from './errorClassifier';
+import { sseRequest } from './sseClient';
+import { runAgent, type AgentProgressCallback } from './agentLoop';
 
 const FILE_SYSTEM_INSTRUCTION = `
 You are an AI coding assistant that can CREATE and MODIFY files in the user's project.
@@ -18,88 +19,13 @@ Always output the full file content, not partial or placeholder code.
 When creating a project, output ALL necessary files in one response using multiple ### FILE: blocks.
 `.trim();
 
-function genId(): string {
-  return 'xxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx'.replace(/[xy]/g, c => {
-    const r = (Math.random() * 16) | 0;
-    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
-  });
-}
-
-interface SseEvent {
-  gpt_response?: string;
-  thinking?: string;
-  message_type?: number;
-  finished?: number;
-}
-
-function sse(
-  url: string,
-  body: Record<string, unknown>,
-  headers: Record<string, string>,
-  skipSsl: boolean,
-  onData: (e: SseEvent) => void,
-  onDone: () => void,
-  onErr: (err: Error) => void
-): void {
-  const u = new URL(url);
-  const t = u.protocol === 'https:' ? https : http;
-
-  const req = t.request({
-    hostname: u.hostname,
-    port: u.port || (u.protocol === 'https:' ? 443 : 80),
-    path: u.pathname + u.search,
-    method: 'POST',
-    headers: { ...headers, 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-    rejectUnauthorized: !skipSsl,
-  }, res => {
-    let buf = '';
-    res.on('data', (chunk: Buffer) => {
-      buf += chunk.toString();
-      const lines = buf.split('\n');
-      buf = lines.pop() || '';
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const raw = line.slice(6);
-        if (raw.trim() === '[DONE]') return onDone();
-        try { onData(JSON.parse(raw)); } catch { /* skip */ }
-      }
-    });
-    res.on('end', onDone);
-    res.on('error', onErr);
-  });
-  req.on('error', onErr);
-  req.write(JSON.stringify(body));
-  req.end();
-}
-
-function mkHeaders(token: string): Record<string, string> {
-  return {
-    authorization: token,
-    referer: 'https://nfoprd-cn.aia.biz/',
-    'staff_assistant-header': 'staff_assistant',
-    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0',
-  };
-}
-
-function mkBody(question: string): Record<string, unknown> {
-  const cfg = getConfig();
-  return {
-    code: 'direct_model',
-    question: question + '\n',
-    history: [],
-    kb_id: cfg.kbId,
-    chat_id: genId(),
-    reasoning_model: cfg.reasoningModel ? 1 : 0,
-    web_search: cfg.webSearch ? 1 : 0,
-    regenerate: 0,
-    quote_message_id: '',
-  };
-}
+// ---- Simple Chat (no tools) ----
 
 export async function streamChat(
   userMessage: string,
   onChunk: (text: string) => void,
-  onThinking: (text: string) => void
+  onThinking: (text: string) => void,
+  maxRetries = 3,
 ): Promise<void> {
   const cfg = getConfig();
   if (!cfg.token) {
@@ -116,57 +42,85 @@ export async function streamChat(
     // continue without context
   }
 
-  return new Promise(resolve => {
-    let full = '';
-    sse(
-      cfg.baseUrl, mkBody(question), mkHeaders(cfg.token), cfg.verifySsl,
-      (ev) => {
-        const txt = ev.gpt_response || '';
-        const think = ev.thinking || '';
-        const mt = ev.message_type;
-        if (think && cfg.showThinking) onThinking(think);
-        if (txt && (mt === 4 || mt === 5)) {
-          const delta = txt.slice(full.length);
-          if (delta) { full = txt; onChunk(delta); }
-        }
-      },
-      () => {
+  let lastErrorMsg = '';
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (attempt > 0) {
+      const delay = getRetryDelay(attempt - 1);
+      onChunk(`\n\n_Retrying (attempt ${attempt}/${maxRetries})..._\n\n`);
+      await sleep(delay);
+    }
+
+    try {
+      const full = await sseRequest(
+        cfg.baseUrl, question, cfg.token, cfg.verifySsl,
+        onChunk, onThinking,
+      );
+      addMessage({ role: 'user', content: userMessage, timestamp: Date.now() });
+      addMessage({ role: 'assistant', content: full, timestamp: Date.now() });
+      return;
+    } catch (err: any) {
+      const classified = classifyError(err);
+      lastErrorMsg = classified.message;
+      if (!classified.retryable || attempt >= maxRetries) {
         addMessage({ role: 'user', content: userMessage, timestamp: Date.now() });
-        addMessage({ role: 'assistant', content: full, timestamp: Date.now() });
-        resolve();
-      },
-      (err) => { onChunk(`**Error:** ${err.message}`); resolve(); }
-    );
-  });
+        addMessage({ role: 'assistant', content: `**Error:** ${lastErrorMsg}`, timestamp: Date.now() });
+        onChunk(`\n\n**Error:** ${lastErrorMsg}`);
+        return;
+      }
+    }
+  }
+  onChunk(`\n\n**Error:** ${lastErrorMsg}`);
 }
 
-export async function runPrompt(prompt: string, extra?: string): Promise<string> {
+// ---- Agent Chat (with tools) ----
+
+export async function streamChatAgent(
+  userMessage: string,
+  onProgress: AgentProgressCallback,
+): Promise<void> {
+  await runAgent(userMessage, onProgress);
+}
+
+// ---- One-shot Prompt ----
+
+export async function runPrompt(
+  promptStr: string,
+  extra?: string,
+  maxRetries = 2,
+): Promise<string> {
   const cfg = getConfig();
   if (!cfg.token) return '**Error:** AIA token is not set.';
 
-  let question = `Instructions:\n${FILE_SYSTEM_INSTRUCTION}\n\n${prompt}`;
+  let question = `Instructions:\n${FILE_SYSTEM_INSTRUCTION}\n\n${promptStr}`;
   try {
     const ctx = await getFullContext();
     const ctxStr = ctxToPrompt(ctx);
-    question = `Instructions:\n${FILE_SYSTEM_INSTRUCTION}\n\nProject context:\n${ctxStr}\n\n---\n${prompt}`;
+    question = `Instructions:\n${FILE_SYSTEM_INSTRUCTION}\n\nProject context:\n${ctxStr}\n\n---\n${promptStr}`;
   } catch { /* continue without context */ }
   if (extra) question = `${extra}\n\n---\n${question}`;
 
-  return new Promise(resolve => {
-    let full = '';
-    sse(
-      cfg.baseUrl, mkBody(question), mkHeaders(cfg.token), cfg.verifySsl,
-      (ev) => {
-        const txt = ev.gpt_response || '';
-        const mt = ev.message_type;
-        if (txt && (mt === 4 || mt === 5)) full = txt;
-      },
-      () => {
-        addMessage({ role: 'user', content: prompt, timestamp: Date.now() });
-        addMessage({ role: 'assistant', content: full, timestamp: Date.now() });
-        resolve(full || '_(No response)_');
-      },
-      (err) => resolve(`**Error:** ${err.message}`)
-    );
-  });
+  let lastError = '';
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (attempt > 0) await sleep(getRetryDelay(attempt - 1));
+    try {
+      const full = await sseRequest(
+        cfg.baseUrl, question, cfg.token, cfg.verifySsl,
+        () => {}, () => {},
+      );
+      addMessage({ role: 'user', content: promptStr, timestamp: Date.now() });
+      addMessage({ role: 'assistant', content: full, timestamp: Date.now() });
+      return full || '_(No response)_';
+    } catch (err: any) {
+      const classified = classifyError(err);
+      lastError = classified.message;
+      if (!classified.retryable || attempt >= maxRetries) {
+        addMessage({ role: 'user', content: promptStr, timestamp: Date.now() });
+        addMessage({ role: 'assistant', content: `**Error:** ${lastError}`, timestamp: Date.now() });
+        return `**Error:** ${lastError}`;
+      }
+    }
+  }
+  addMessage({ role: 'user', content: promptStr, timestamp: Date.now() });
+  addMessage({ role: 'assistant', content: `**Error:** ${lastError}`, timestamp: Date.now() });
+  return `**Error:** ${lastError}`;
 }

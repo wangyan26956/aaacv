@@ -33,3 +33,7 @@ export function clearHistory(): void {
 export function newChat(): void {
   messages = [];
 }
+
+export function setMessages(msgs: ChatMessage[]): void {
+  messages = [...msgs];
+}

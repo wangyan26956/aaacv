@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { getGitContext, formatGitContext } from './gitContext';
 
 export interface FullContext {
   selectedText: string;
@@ -7,6 +8,7 @@ export interface FullContext {
   workspaceRoot: string;
   projectTree: string;
   openFiles: string[];
+  gitContext?: string;
 }
 
 async function scanProjectTree(root: vscode.Uri): Promise<string> {
@@ -58,6 +60,10 @@ export async function getFullContext(): Promise<FullContext> {
 
   if (workspaceRoot) {
     ctx.projectTree = await scanProjectTree(workspaceRoot);
+    const gc = await getGitContext(workspaceRoot.fsPath);
+    if (gc) {
+      ctx.gitContext = formatGitContext(gc);
+    }
   }
 
   return ctx;
@@ -68,6 +74,9 @@ export function ctxToPrompt(ctx: FullContext): string {
 
   if (ctx.workspaceRoot) {
     p.push(`Workspace: ${ctx.workspaceRoot}`);
+  }
+  if (ctx.gitContext) {
+    p.push(ctx.gitContext);
   }
   if (ctx.projectTree) {
     p.push(`Project files:\n${ctx.projectTree}`);

@@ -1,0 +1,72 @@
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:var(--vscode-font-family);font-size:13px;color:var(--vscode-foreground);background:var(--vscode-sideBar-background);height:100vh;display:flex;flex-direction:column}
+#hdr{display:none;padding:4px 10px;font-size:11px;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground);border-bottom:1px solid var(--vscode-panel-border)}
+#hdr.on{display:block}
+#msgs{flex:1;overflow-y:auto;padding:8px;display:flex;flex-direction:column;gap:8px}
+.m{padding:7px 10px;border-radius:6px;max-width:100%;line-height:1.45;word-wrap:break-word}
+.m.u{align-self:flex-end;background:var(--vscode-button-background);color:var(--vscode-button-foreground)}
+.m.a{align-self:flex-start;background:var(--vscode-editor-background);border:1px solid var(--vscode-panel-border)}
+.lbl{font-size:10px;font-weight:600;text-transform:uppercase;opacity:.65;margin-bottom:3px}
+#foot{border-top:1px solid var(--vscode-panel-border);padding:6px;display:flex;gap:5px}
+#foot textarea{flex:1;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:3px;padding:7px;font-family:inherit;font-size:13px;resize:none;min-height:34px;max-height:100px}
+#foot textarea:focus{outline:1px solid var(--vscode-focusBorder)}
+#foot button{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;border-radius:3px;padding:0 12px;cursor:pointer;font-size:12px}
+#foot button:hover{background:var(--vscode-button-hoverBackground)}
+#foot button:disabled{opacity:.4}
+#btn-agent{background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground);font-size:11px}
+#btn-agent:hover{background:var(--vscode-button-secondaryHoverBackground)}
+#btn-agent.active{background:var(--vscode-inputValidation-infoBackground);color:var(--vscode-inputValidation-infoForeground);border:1px solid var(--vscode-inputValidation-infoBorder)}
+.emp{text-align:center;color:var(--vscode-descriptionForeground);padding:30px 15px;margin-top:30px}
+
+/* Markdown elements */
+.m.a p{margin:4px 0}
+.m.a pre{background:var(--vscode-textCodeBlock-background);border-radius:4px;padding:10px 12px;overflow-x:auto;font-family:var(--vscode-editor-font-family);font-size:12px;line-height:1.4;margin:6px 0;position:relative}
+.m.a code{font-family:var(--vscode-editor-font-family);font-size:12px}
+.m.a p code{background:var(--vscode-textCodeBlock-background);padding:1px 4px;border-radius:3px}
+.m.a ul,.m.a ol{padding-left:20px;margin:4px 0}
+.m.a li{margin:2px 0}
+.m.a blockquote{border-left:3px solid var(--vscode-textBlockQuote-border);background:var(--vscode-textBlockQuote-background);padding:4px 10px;margin:6px 0}
+.m.a table{border-collapse:collapse;margin:6px 0;width:100%}
+.m.a th,.m.a td{border:1px solid var(--vscode-panel-border);padding:5px 8px;text-align:left;font-size:12px}
+.m.a th{background:var(--vscode-editor-inactiveSelectionBackground)}
+.m.a h1,.m.a h2,.m.a h3{font-size:15px;font-weight:600;margin:8px 0 4px}
+.m.a hr{border:none;border-top:1px solid var(--vscode-panel-border);margin:8px 0}
+
+/* Code block header */
+.code-block{position:relative}
+.cb-header{display:flex;justify-content:space-between;align-items:center;padding:2px 8px;background:var(--vscode-textCodeBlock-background);border-radius:4px 4px 0 0;font-size:11px}
+.cb-header + pre{border-radius:0 0 4px 4px;margin-top:0}
+.cb-lang{color:var(--vscode-descriptionForeground)}
+.cb-copy{background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground);border:none;border-radius:3px;padding:1px 8px;cursor:pointer;font-size:11px;opacity:0;transition:opacity .15s}
+.code-block:hover .cb-copy,.cb-copy.copied{opacity:1}
+.cb-copy:hover{background:var(--vscode-button-secondaryHoverBackground)}
+.cb-copy.copied{background:var(--vscode-testing-iconPassed)}
+
+/* Thinking section */
+.think{font-size:12px;border-left:2px solid var(--vscode-textBlockQuote-border);margin:6px 0;padding:4px 8px;background:var(--vscode-editor-inactiveSelectionBackground);border-radius:0 4px 4px 0}
+.think summary{cursor:pointer;color:var(--vscode-descriptionForeground);font-style:italic;user-select:none;padding:2px 0}
+.think summary:hover{color:var(--vscode-foreground)}
+.think .think-content{font-family:var(--vscode-editor-font-family);font-size:11px;white-space:pre-wrap;word-wrap:break-word;color:var(--vscode-descriptionForeground);margin-top:4px;max-height:300px;overflow-y:auto}
+
+/* Empty state */
+.emp b{display:block;margin-bottom:6px;font-size:15px}
+
+/* Error message */
+.m.a.err{border-color:var(--vscode-inputValidation-errorBorder);background:var(--vscode-inputValidation-errorBackground)}
+.m.a.err .lbl{color:var(--vscode-inputValidation-errorForeground)}
+
+/* Tool messages */
+.tool-msg{border-left:3px solid var(--vscode-inputValidation-infoBorder);background:var(--vscode-editor-inactiveSelectionBackground)}
+.tool-lbl{color:var(--vscode-inputValidation-infoForeground)}
+.tool-args{font-family:var(--vscode-editor-font-family);font-size:11px;color:var(--vscode-descriptionForeground);white-space:pre-wrap;margin:2px 0}
+.tool-status{font-size:12px;color:var(--vscode-descriptionForeground)}
+.tool-result{font-family:var(--vscode-editor-font-family);font-size:11px;background:var(--vscode-textCodeBlock-background);padding:4px 8px;border-radius:3px;max-height:200px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;margin-top:4px}
+.err-msg{color:var(--vscode-inputValidation-errorForeground);margin-top:4px}
+
+/* Spinner for running tools */
+.spinner{display:inline-block;width:10px;height:10px;border:2px solid var(--vscode-descriptionForeground);border-top-color:transparent;border-radius:50%;animation:spin .6s linear infinite;margin-right:4px;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Retry button */
+.retry-btn{display:inline-block;margin-top:6px;background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground);border:none;border-radius:3px;padding:3px 12px;cursor:pointer;font-size:11px}
+.retry-btn:hover{background:var(--vscode-button-secondaryHoverBackground)}
