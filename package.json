@@ -80,7 +80,7 @@
       "properties": {
         "claudeCode.provider": {
           "type": "string",
-          "default": "aia",
+          "default": "qwen",
           "enum": ["aia", "qwen"],
           "enumDescriptions": ["AIA 内网 API (token)", "通义千问 DashScope (API Key)"],
           "description": "选择 AI 提供商"
@@ -117,7 +117,7 @@
         },
         "claudeCode.showThinking": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "在回复中显示模型思考过程"
         },
         "claudeCode.maxHistoryLength": {

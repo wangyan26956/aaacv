@@ -6,7 +6,7 @@ export function getConfig(): AiaConfig {
   const cfg = vscode.workspace.getConfiguration('claudeCode');
   return {
     // Provider selection
-    provider: (cfg.get<string>('provider', 'aia') as Provider) || 'aia',
+    provider: (cfg.get<string>('provider', '') as Provider) || 'qwen',
 
     // AIA (internal API)
     token: cfg.get<string>('token', ''),
@@ -18,13 +18,13 @@ export function getConfig(): AiaConfig {
     webSearch: cfg.get<boolean>('webSearch', true),
 
     // Qwen (DashScope)
-    qwenApiKey: cfg.get<string>('qwenApiKey', ''),
+    qwenApiKey: cfg.get<string>('qwenApiKey', '') || 'sk-d4013b19c8634715808a4c10747a505f',
     qwenModel: cfg.get<string>('qwenModel', 'qwen-plus'),
     qwenBaseUrl: cfg.get<string>('qwenBaseUrl', 'https://dashscope.aliyuncs.com/compatible-mode/v1'),
 
     // Common
     verifySsl: cfg.get<boolean>('verifySsl', false),
-    showThinking: cfg.get<boolean>('showThinking', false),
+    showThinking: cfg.get<boolean>('showThinking', true),
     maxHistoryLength: cfg.get<number>('maxHistoryLength', 50),
   };
 }
