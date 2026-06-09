@@ -1,11 +1,19 @@
 import * as vscode from 'vscode';
 import { readFile, writeFile, mkdir } from 'fs/promises';
-import { execFile } from 'child_process';
+import { exec } from 'child_process';
 import { promisify } from 'util';
 import { join, dirname } from 'path';
-import { statSync } from 'fs';
 
-const execFileAsync = promisify(execFile);
+const execAsync = promisify(exec);
+
+// Shared VS Code terminal for showing commands to the user
+let _codeAiTerm: vscode.Terminal | null = null;
+function getCodeAiTerminal(): vscode.Terminal {
+  if (!_codeAiTerm) {
+    _codeAiTerm = vscode.window.createTerminal('Code AI');
+  }
+  return _codeAiTerm;
+}
 
 // ---- Tool Definitions ----
 
@@ -181,25 +189,22 @@ async function execGrep(args: Record<string, unknown>): Promise<string> {
   const searchPath = args.path ? resolvePath(String(args.path)) : getWorkspaceRoot();
   const glob = args.glob ? String(args.glob) : null;
   const context = Number(args.context) || 2;
+  const cwd = getWorkspaceRoot();
 
-  // Try ripgrep first, then git grep, then cmd.exe findstr (Windows built-in)
-  const rgArgs = ['--no-heading', '--line-number', '-C', String(context), pattern];
-  if (glob) rgArgs.unshift('-g', glob);
-  rgArgs.push(searchPath);
-
+  // Try ripgrep → findstr (Windows) → git grep
+  // All via exec() to avoid spawn/EPERM issues
   const tryRg = async (): Promise<string> => {
-    const { stdout } = await execFileAsync('rg', rgArgs, { timeout: 10000, maxBuffer: 1024 * 500 });
-    return formatGrepOutput(stdout.trim());
-  };
-
-  const tryGitGrep = async (): Promise<string> => {
-    const { stdout } = await execFileAsync('git', ['grep', '-n', '-C', String(context), pattern], { timeout: 10000, maxBuffer: 1024 * 500 });
+    const { stdout } = await execAsync(`rg --no-heading --line-number -C ${context} ${glob ? '-g ' + glob : ''} "${pattern}" "${searchPath}"`, { timeout: 10000, maxBuffer: 1024 * 500, cwd });
     return formatGrepOutput(stdout.trim());
   };
 
   const tryFindStr = async (): Promise<string> => {
-    // Windows findstr — no context support, just matching lines
-    const { stdout } = await execFileAsync('cmd.exe', ['/c', `findstr /s /n /i "${pattern}" *.* 2>nul`], { timeout: 10000, cwd: searchPath, maxBuffer: 1024 * 500 });
+    const { stdout } = await execAsync(`findstr /s /n /i "${pattern}" "${searchPath}\\*.*" 2>nul`, { timeout: 10000, cwd, maxBuffer: 1024 * 500 });
+    return formatGrepOutput(stdout.trim());
+  };
+
+  const tryGitGrep = async (): Promise<string> => {
+    const { stdout } = await execAsync(`git grep -n -C ${context} "${pattern}"`, { timeout: 10000, cwd, maxBuffer: 1024 * 500 });
     return formatGrepOutput(stdout.trim());
   };
 
@@ -240,43 +245,19 @@ async function execBash(args: Record<string, unknown>): Promise<string> {
   }
 
   const cwd = getWorkspaceRoot();
-  const timeout = 30000;
-  const maxBuffer = 1024 * 500;
 
-  // On Windows, try cmd.exe first (always available, no execution policy issues),
-  // then PowerShell as fallback
-  if (process.platform === 'win32') {
-    // Try cmd.exe
-    try {
-      const { stdout, stderr } = await execFileAsync('cmd.exe', ['/c', command], {
-        timeout, maxBuffer, cwd,
-      });
-      const out = stdout.trim();
-      const err = stderr.trim();
-      if (out && err) return `${out}\n\n[stderr]:\n${err}`;
-      return out || err || '(command completed, no output)';
-    } catch (e: any) {
-      if (e.killed) return 'Command timed out after 30s';
-      // cmd.exe failed, try PowerShell
-      try {
-        const { stdout, stderr } = await execFileAsync('powershell.exe', ['-ExecutionPolicy', 'Bypass', '-Command', command], {
-          timeout, maxBuffer, cwd,
-        });
-        const out = stdout.trim();
-        const err = stderr.trim();
-        if (out && err) return `${out}\n\n[stderr]:\n${err}`;
-        return out || err || '(command completed, no output)';
-      } catch (e2: any) {
-        if (e2.killed) return 'Command timed out after 30s';
-        return `Cannot run command. cmd.exe: ${e.message}. powershell.exe: ${e2.message}`;
-      }
-    }
-  }
+  // Echo to VS Code terminal so user can watch
+  const term = getCodeAiTerminal();
+  term.show(true); // bring terminal into view
+  term.sendText(command, false); // send command, don't auto-execute newline twice
 
-  // Unix
+  // Use exec() — runs through system shell (cmd.exe on Windows), no EPERM
   try {
-    const { stdout, stderr } = await execFileAsync('/bin/bash', ['-c', command], {
-      timeout, maxBuffer, cwd,
+    const { stdout, stderr } = await execAsync(command, {
+      timeout: 30000,
+      maxBuffer: 1024 * 500,
+      cwd,
+      shell: process.platform === 'win32' ? 'cmd.exe' : '/bin/bash',
     });
     const out = stdout.trim();
     const err = stderr.trim();
@@ -284,7 +265,7 @@ async function execBash(args: Record<string, unknown>): Promise<string> {
     return out || err || '(command completed, no output)';
   } catch (e: any) {
     if (e.killed) return 'Command timed out after 30s';
-    return `Exit ${e.code}: ${e.stderr || e.stdout || e.message}`;
+    return `Exit ${e.code || 'error'}: ${e.stderr || e.stdout || e.message}`;
   }
 }
 
