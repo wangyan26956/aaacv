@@ -49,7 +49,7 @@ function convertMessages(body: any): { question: string; history: any[] } {
   }
   if (Array.isArray(body.tools)) {
     parts.push('\nAvailable tools:\n' + body.tools.map((t: any) =>
-      `Tool: ${t.name} — ${t.description || ''}\nParams: ${JSON.stringify(t.input_schema || {})}`).join('\n'));
+      `Tool: ${t.name} - ${t.description || ''}\nParams: ${JSON.stringify(t.input_schema || {})}`).join('\n'));
   }
   const messages = body.messages || [];
   const history: any[] = [];
@@ -73,7 +73,6 @@ function callAia(question: string, history: any[], onData: (c: string) => void, 
   req.on('error', onErr); req.write(body); req.end();
 }
 
-// ---- SSE translator: AIA → Anthropic stream ----
 function makeTranslator(res: http.ServerResponse, onDone: () => void): (raw: string) => void {
   let buf = '', fullText = '', fullThink = '', textIdx = -1, thinkIdx = -1;
 
@@ -115,7 +114,7 @@ function makeTranslator(res: http.ServerResponse, onDone: () => void): (raw: str
 
 function log(method: string | undefined, url: string, status: number, extra?: string): void {
   const ts = new Date().toISOString().slice(11, 19);
-  console.log(`[${ts}] ${method || '?'} ${url} → ${status}${extra ? ' ' + extra : ''}`);
+  console.log(`[${ts}] ${method || '?'} ${url} -> ${status}${extra ? ' ' + extra : ''}`);
 }
 
 // ---- Server ----
@@ -126,11 +125,12 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
-  const url = req.url || '/';
+  const rawUrl = req.url || '/';
+  const path = rawUrl.split('?')[0];
 
-  // /v1/models — list available models
-  if (url === '/v1/models' && req.method === 'GET') {
-    log('GET', url, 200);
+  // /v1/models
+  if (path === '/v1/models' && req.method === 'GET') {
+    log('GET', rawUrl, 200);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       data: [
@@ -143,26 +143,26 @@ const server = http.createServer((req, res) => {
   }
 
   // Health
-  if (url === '/' || url === '/health') {
+  if (path === '/' || path === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', provider: 'aia', kbId: AIA_KB_ID }));
     return;
   }
 
   // /v1/messages/count_tokens
-  if (url === '/v1/messages/count_tokens' && req.method === 'POST') {
+  if (path === '/v1/messages/count_tokens' && req.method === 'POST') {
     let body = '';
     req.on('data', c => body += c.toString());
     req.on('end', () => {
-      log('POST', url, 200, `input_tokens=${Math.ceil(body.length / 3)}`);
+      log('POST', rawUrl, 200, `input_tokens=${Math.ceil(body.length / 3)}`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ input_tokens: Math.ceil(body.length / 3) }));
     });
     return;
   }
 
-  // /v1/messages — main chat
-  if (url === '/v1/messages' && req.method === 'POST') {
+  // /v1/messages
+  if (path === '/v1/messages' && req.method === 'POST') {
     let body = '';
     req.on('data', c => body += c.toString());
     req.on('end', () => {
@@ -173,7 +173,7 @@ const server = http.createServer((req, res) => {
         return;
       }
       const stream = parsed.stream !== false;
-      log('POST', url, 200, stream ? '(stream)' : '(sync)');
+      log('POST', rawUrl, 200, stream ? '(stream)' : '(sync)');
 
       if (!stream) {
         const { question, history } = convertMessages(parsed);
@@ -202,16 +202,16 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  log(req.method, url, 404);
+  log(req.method, rawUrl, 404);
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'Not found' }));
 });
 
 server.listen(PORT, '127.0.0.1', () => {
-  console.log(`\n  AIA → Anthropic proxy: http://127.0.0.1:${PORT}`);
+  console.log(`\n  AIA -> Anthropic proxy: http://127.0.0.1:${PORT}`);
   console.log(`  KB ID   : ${AIA_KB_ID}`);
   console.log(`  Model   : ${PROXY_MODEL}`);
-  console.log(`  Token   : ${AIA_TOKEN ? '✓ set' : '✗ NOT SET'}`);
+  console.log(`  Token   : ${AIA_TOKEN ? 'OK' : 'NOT SET'}`);
   console.log(`\n  settings.json:`);
   console.log(`  { "env": { "ANTHROPIC_BASE_URL": "http://127.0.0.1:${PORT}", "ANTHROPIC_AUTH_TOKEN": "x" } }\n`);
 });
