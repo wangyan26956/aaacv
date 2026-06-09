@@ -103,27 +103,33 @@ You have access to the following tools. To use a tool, output a <tool> block wit
 After each <tool> block, the tool result will be injected into the conversation.
 You can call multiple tools in a single response. The results will all be available before you reply.
 
+IMPORTANT: Use FORWARD SLASHES in all paths! Example: c:/work/project/src/file.ts NOT c:\\work\\project\\src\\file.ts
+Backslashes break JSON parsing. Forward slashes work everywhere: relative paths like "src/file.ts", absolute like "c:/work/project/src/file.ts".
+
 Do NOT guess file contents — use read_file to read first.
 Do NOT hallucinate code — use write_file to create files, then confirm.
 
 ${toToolPrompt()}
 
+## Path Rules
+- Always use FORWARD SLASHES: c:/work/project/src/main.ts
+- Relative paths are fine: src/main.ts (resolved from workspace root)
+- Never use backslashes \\\\ — they break the JSON parser
+
 ## Tool Usage Rules
-1. read_file before editing — always read a file before modifying it
-2. grep to find where code lives — search before guessing file locations
-3. write_file creates or overwrites — provide COMPLETE file content, never partial
-4. bash for git, npm, builds — describe what the command does
-5. list_files to explore project structure
+1. list_files first to explore the project structure
+2. read_file before editing — always read a file before modifying it
+3. grep to find where code lives — search before guessing file locations
+4. write_file creates or overwrites — provide COMPLETE file content, never partial
+5. bash for git, npm, builds — describe what the command does
 6. When done, respond with plain text (no tool blocks)
 
 ## Example
 User: "What does the login function do?"
-Think: I need to find where login is defined. Let me search for it.
 <tool name="grep">
 {"pattern": "function login", "glob": "*.ts"}
 </tool>
-[Tool result shows it's in src/auth.ts line 42]
-Now let me read it:
+[Tool result shows matches]
 <tool name="read_file">
 {"path": "src/auth.ts", "offset": 42, "limit": 30}
 </tool>
@@ -141,9 +147,17 @@ function getWorkspaceRoot(): string {
 }
 
 function resolvePath(relPath: string): string {
-  const root = getWorkspaceRoot();
-  // Allow absolute paths or relative
-  return relPath.startsWith(root) ? relPath : join(root, relPath);
+  // Normalize backslashes to forward slashes (AI sometimes outputs them anyway)
+  const fixed = relPath.replace(/\\/g, '/');
+  const root = getWorkspaceRoot().replace(/\\/g, '/');
+
+  // Already absolute? (e.g., c:/work/...)
+  if (/^[a-zA-Z]:[/\\]/.test(fixed) || fixed.startsWith('/')) {
+    return fixed;
+  }
+  // Remove leading ./ if present
+  const clean = fixed.replace(/^\.\//, '');
+  return join(root, clean).replace(/\\/g, '/');
 }
 
 function escapeHtml(s: string): string {
@@ -154,6 +168,19 @@ async function execReadFile(args: Record<string, unknown>): Promise<string> {
   const path = resolvePath(String(args.path || ''));
   const offset = Number(args.offset) || 1;
   const limit = Number(args.limit) || 200;
+
+  // Check if it's a directory before trying to read
+  try {
+    const stat = await import('fs/promises').then(m => m.stat(path));
+    if (stat.isDirectory()) {
+      // List the directory contents instead
+      const files = await import('fs/promises').then(m => m.readdir(path));
+      const items = files.slice(0, 50).join('\n');
+      return `"${path}" is a directory, not a file. Contents:\n${items}\n${files.length > 50 ? `\n... (${files.length - 50} more items)` : ''}\n\nUse read_file with a specific file path.`;
+    }
+  } catch {
+    // File doesn't exist yet or can't stat — proceed to read attempt
+  }
 
   const content = await readFile(path, 'utf-8');
   const lines = content.split('\n');
@@ -194,17 +221,18 @@ async function execGrep(args: Record<string, unknown>): Promise<string> {
   // Try ripgrep → findstr (Windows) → git grep
   // All via exec() to avoid spawn/EPERM issues
   const tryRg = async (): Promise<string> => {
-    const { stdout } = await execAsync(`rg --no-heading --line-number -C ${context} ${glob ? '-g ' + glob : ''} "${pattern}" "${searchPath}"`, { timeout: 10000, maxBuffer: 1024 * 500, cwd });
+    const { stdout } = await execAsync(`rg --no-heading --line-number -C ${context} ${glob ? '-g ' + glob : ''} ${JSON.stringify(pattern)} "${searchPath}"`, { timeout: 10000, maxBuffer: 1024 * 500, cwd });
     return formatGrepOutput(stdout.trim());
   };
 
   const tryFindStr = async (): Promise<string> => {
-    const { stdout } = await execAsync(`findstr /s /n /i "${pattern}" "${searchPath}\\*.*" 2>nul`, { timeout: 10000, cwd, maxBuffer: 1024 * 500 });
+    // findstr searches *.* under the given path with /s (recursive)
+    const { stdout } = await execAsync(`findstr /s /n /i /c:${JSON.stringify(pattern)} "${searchPath}\\*.*"`, { timeout: 10000, cwd, maxBuffer: 1024 * 500 });
     return formatGrepOutput(stdout.trim());
   };
 
   const tryGitGrep = async (): Promise<string> => {
-    const { stdout } = await execAsync(`git grep -n -C ${context} "${pattern}"`, { timeout: 10000, cwd, maxBuffer: 1024 * 500 });
+    const { stdout } = await execAsync(`git grep -n -C ${context} "${pattern.replace(/"/g, '\\"')}"`, { timeout: 10000, cwd, maxBuffer: 1024 * 500 });
     return formatGrepOutput(stdout.trim());
   };
 
@@ -270,21 +298,32 @@ async function execBash(args: Record<string, unknown>): Promise<string> {
 }
 
 async function execListFiles(args: Record<string, unknown>): Promise<string> {
-  const dir = args.dir ? resolvePath(String(args.dir)) : getWorkspaceRoot();
+  const dir = args.dir || args.path ? resolvePath(String(args.dir || args.path)) : getWorkspaceRoot();
   const pattern = args.pattern ? String(args.pattern) : null;
 
   try {
     const globPattern = pattern || '**/*';
     const files = await vscode.workspace.findFiles(
       globPattern,
-      '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**}',
+      '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/.next/**}',
       200,
     );
-    const paths = files.map((f) => vscode.workspace.asRelativePath(f)).sort();
-    if (paths.length >= 200) {
-      return paths.join('\n') + `\n... (shown 200 of many files, use glob to narrow)`;
+    // Filter: only files under the requested dir
+    const normalizedDir = dir.replace(/\\/g, '/').toLowerCase();
+    let paths = files
+      .map((f) => vscode.workspace.asRelativePath(f).replace(/\\/g, '/'))
+      .filter((p) => p.toLowerCase().startsWith(normalizedDir.toLowerCase()) || normalizedDir === getWorkspaceRoot().replace(/\\/g, '/').toLowerCase())
+      .sort();
+
+    // If no files found with workspace-relative filter, try without filter
+    if (paths.length === 0 && !args.dir && !args.path) {
+      paths = files.map((f) => vscode.workspace.asRelativePath(f).replace(/\\/g, '/')).sort();
     }
-    return paths.join('\n') || 'No files found';
+
+    if (paths.length >= 200) {
+      return paths.slice(0, 200).join('\n') + `\n... (shown 200 of many files, use glob to narrow)`;
+    }
+    return paths.join('\n') || `No files found in ${dir}`;
   } catch (e: any) {
     return `Error listing files: ${e.message}`;
   }
