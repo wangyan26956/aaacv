@@ -7,7 +7,7 @@ import {
   executeTool,
   type ToolCall,
 } from './tools';
-import { sseRequest } from './sseClient';
+import { chat } from './aiClient';
 import { classifyError, getRetryDelay, sleep } from './errorClassifier';
 
 const MAX_AGENT_TURNS = 10;
@@ -58,8 +58,12 @@ export async function runAgent(
   onProgress: AgentProgressCallback,
 ): Promise<void> {
   const cfg = getConfig();
-  if (!cfg.token) {
-    onProgress({ type: 'error', message: 'AIA token is not set.' });
+  if (cfg.provider === 'aia' && !cfg.token) {
+    onProgress({ type: 'error', message: 'AIA token is not set. Configure claudeCode.token in settings.' });
+    return;
+  }
+  if (cfg.provider === 'qwen' && !cfg.qwenApiKey) {
+    onProgress({ type: 'error', message: 'Qwen API key is not set. Configure claudeCode.qwenApiKey in settings.' });
     return;
   }
 
@@ -87,11 +91,8 @@ export async function runAgent(
         await sleep(getRetryDelay(attempt - 1));
       }
       try {
-        fullResponse = await sseRequest(
-          cfg.baseUrl,
+        fullResponse = await chat(
           currentPrompt,
-          cfg.token,
-          cfg.verifySsl,
           (delta) => {
             // Show non-tool text as it streams in, stripping any <tool> content
             const cleanDelta = delta.replace(/<tool[\s\S]*$/g, '');

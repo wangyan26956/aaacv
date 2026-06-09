@@ -78,6 +78,13 @@
     "configuration": {
       "title": "Code AI",
       "properties": {
+        "claudeCode.provider": {
+          "type": "string",
+          "default": "aia",
+          "enum": ["aia", "qwen"],
+          "enumDescriptions": ["AIA 内网 API (token)", "通义千问 DashScope (API Key)"],
+          "description": "选择 AI 提供商"
+        },
         "claudeCode.token": {
           "type": "string",
           "default": "",
@@ -117,6 +124,21 @@
           "type": "number",
           "default": 50,
           "description": "最大历史消息数"
+        },
+        "claudeCode.qwenApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "通义千问 API Key (DashScope)"
+        },
+        "claudeCode.qwenModel": {
+          "type": "string",
+          "default": "qwen-plus",
+          "description": "通义千问模型名称 (qwen-plus, qwen-max, qwen-turbo 等)"
+        },
+        "claudeCode.qwenBaseUrl": {
+          "type": "string",
+          "default": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+          "description": "通义千问 API 地址 (OpenAI 兼容模式)"
         }
       }
     },

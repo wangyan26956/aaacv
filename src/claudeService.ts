@@ -2,7 +2,7 @@ import { getConfig } from './config';
 import { addMessage } from './chatHistory';
 import { getFullContext, ctxToPrompt } from './contextProvider';
 import { classifyError, getRetryDelay, sleep } from './errorClassifier';
-import { sseRequest } from './sseClient';
+import { chat } from './aiClient';
 import { runAgent, type AgentProgressCallback } from './agentLoop';
 
 const FILE_SYSTEM_INSTRUCTION = `
@@ -28,8 +28,12 @@ export async function streamChat(
   maxRetries = 3,
 ): Promise<void> {
   const cfg = getConfig();
-  if (!cfg.token) {
+  if (cfg.provider === 'aia' && !cfg.token) {
     onChunk('**Error:** AIA token is not set.');
+    return;
+  }
+  if (cfg.provider === 'qwen' && !cfg.qwenApiKey) {
+    onChunk('**Error:** Qwen API key is not set.');
     return;
   }
 
@@ -51,10 +55,7 @@ export async function streamChat(
     }
 
     try {
-      const full = await sseRequest(
-        cfg.baseUrl, question, cfg.token, cfg.verifySsl,
-        onChunk, onThinking,
-      );
+      const full = await chat(question, onChunk, onThinking);
       addMessage({ role: 'user', content: userMessage, timestamp: Date.now() });
       addMessage({ role: 'assistant', content: full, timestamp: Date.now() });
       return;
@@ -89,7 +90,8 @@ export async function runPrompt(
   maxRetries = 2,
 ): Promise<string> {
   const cfg = getConfig();
-  if (!cfg.token) return '**Error:** AIA token is not set.';
+  if (cfg.provider === 'aia' && !cfg.token) return '**Error:** AIA token is not set.';
+  if (cfg.provider === 'qwen' && !cfg.qwenApiKey) return '**Error:** Qwen API key is not set.';
 
   let question = `Instructions:\n${FILE_SYSTEM_INSTRUCTION}\n\n${promptStr}`;
   try {
@@ -103,10 +105,7 @@ export async function runPrompt(
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     if (attempt > 0) await sleep(getRetryDelay(attempt - 1));
     try {
-      const full = await sseRequest(
-        cfg.baseUrl, question, cfg.token, cfg.verifySsl,
-        () => {}, () => {},
-      );
+      const full = await chat(question, () => {}, () => {});
       addMessage({ role: 'user', content: promptStr, timestamp: Date.now() });
       addMessage({ role: 'assistant', content: full, timestamp: Date.now() });
       return full || '_(No response)_';

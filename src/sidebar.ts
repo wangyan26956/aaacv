@@ -3,6 +3,7 @@ import { streamChatAgent } from './claudeService';
 import { getFullContext } from './contextProvider';
 import { setWebviewPoster } from './commands';
 import { writeFile } from './fileOps';
+import { getConfig } from './config';
 import { getMessages, setMessages } from './chatHistory';
 import { saveChatToHistory, loadChatHistory } from './chatPersistence';
 import type { AgentProgressCallback } from './agentLoop';
@@ -67,7 +68,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <div class="emp" id="emp"><b>Code AI</b><br>Ask me to build anything.</div>
   </div>
   <div id="foot">
-    <textarea id="tin" placeholder="Say something..." rows="1"></textarea>
+    <textarea id="tin" placeholder="${getConfig().provider === 'qwen' ? 'Say something... (Qwen)' : 'Say something... (AIA)'}" rows="1"></textarea>
     <button id="btn">Send</button>
   </div>
   <script src="${scriptUri}"></script>
