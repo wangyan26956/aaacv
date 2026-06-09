@@ -81,8 +81,14 @@
         "claudeCode.provider": {
           "type": "string",
           "default": "qwen",
-          "enum": ["aia", "qwen"],
-          "enumDescriptions": ["AIA 内网 API (token)", "通义千问 DashScope (API Key)"],
+          "enum": [
+            "aia",
+            "qwen"
+          ],
+          "enumDescriptions": [
+            "AIA 内网 API (token)",
+            "通义千问 DashScope (API Key)"
+          ],
           "description": "选择 AI 提供商"
         },
         "claudeCode.token": {
@@ -167,12 +173,14 @@
     "vscode:prepublish": "webpack --mode production",
     "compile": "webpack --mode development",
     "watch": "webpack --mode development --watch",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "proxy": "npx ts-node src/proxy-server.ts"
   },
   "devDependencies": {
     "@types/vscode": "^1.85.0",
     "copy-webpack-plugin": "^14.0.0",
     "ts-loader": "^9.5.1",
+    "ts-node": "^10.9.2",
     "typescript": "^5.3.3",
     "webpack": "^5.89.0",
     "webpack-cli": "^5.1.4"
