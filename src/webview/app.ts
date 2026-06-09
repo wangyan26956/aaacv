@@ -11,18 +11,15 @@ const vscode = acquireVsCodeApi();
 let msgs: HTMLElement;
 let input: HTMLTextAreaElement;
 let btn: HTMLButtonElement;
-let btnAgent: HTMLButtonElement;
 let hdr: HTMLElement;
 let empty: HTMLElement;
 let busy = false;
-let agentMode = false;
 let curBubble: HTMLElement | null = null;
 let curBuf = '';
 let thinkingBuf = '';
 let thinkingSection: HTMLDetailsElement | null = null;
 let thinkingContent: HTMLElement | null = null;
 let thinkingStart = 0;
-let lastMsgText = '';
 
 function hideEmpty(): void {
   if (empty) { empty.remove(); empty = null as any; }
@@ -32,7 +29,7 @@ function addBubble(role: string): HTMLElement {
   hideEmpty();
   const d = document.createElement('div');
   d.className = 'm ' + (role === 'user' ? 'u' : 'a');
-  d.innerHTML = '<div class="lbl">' + (role === 'user' ? 'You' : role === 'tool' ? 'Tool' : 'AI') + '</div><div class="mc"></div>';
+  d.innerHTML = '<div class="lbl">' + (role === 'user' ? 'You' : 'AI') + '</div><div class="mc"></div>';
   msgs.appendChild(d);
   scrollBottom();
   return d;
@@ -41,7 +38,7 @@ function addBubble(role: string): HTMLElement {
 function addToolBubble(name: string): HTMLElement {
   const d = document.createElement('div');
   d.className = 'm a tool-msg';
-  d.innerHTML = '<div class="lbl tool-lbl">Tool: ' + escapeHtml(name) + '</div><div class="mc"></div>';
+  d.innerHTML = '<div class="lbl tool-lbl">' + escapeHtml(name) + '</div><div class="mc"></div>';
   msgs.appendChild(d);
   scrollBottom();
   return d;
@@ -79,79 +76,86 @@ function escapeHtml(s: string): string {
   return d.innerHTML;
 }
 
-function escapeAttr(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
 // ---- Message Handler ----
+// Events from agent mode use {type: '...'} format
+// Events from old protocol use {t: '...'} format
 
 function handleMessage(data: any): void {
-  const t = data.t || data.type;
+  // Agent events (sent by sidebar during agent mode)
+  const evType = data.type;
+  if (evType) {
+    switch (evType) {
+      case 'thinking':
+        thinkingBuf += data.text || '';
+        if (!thinkingSection && curBubble) {
+          const s = addThinkingSection(curBubble);
+          thinkingSection = s.el;
+          thinkingContent = s.content;
+        }
+        if (thinkingContent) {
+          thinkingContent.textContent = thinkingBuf;
+          scrollBottom();
+        }
+        return;
 
-  // Agent events
-  if (t === 'thinking' && !data.t) {
-    thinkingBuf += data.text || '';
-    if (!thinkingSection && curBubble) {
-      const s = addThinkingSection(curBubble);
-      thinkingSection = s.el;
-      thinkingContent = s.content;
+      case 'text':
+        if (curBubble) {
+          curBuf += data.text;
+          curBubble.querySelector('.mc')!.innerHTML = renderMarkdown(curBuf);
+          scrollBottom();
+        }
+        return;
+
+      case 'tool_start':
+        finalizeThinking();
+        addToolBubble(data.call.name);
+        scrollBottom();
+        return;
+
+      case 'tool_result':
+        // Show result in a tool bubble
+        {
+          const result = data.result || '';
+          const truncated = result.length > 2000 ? result.slice(0, 2000) + '\n... (truncated)' : result;
+          const d = document.createElement('div');
+          d.className = 'm a tool-result-msg';
+          d.innerHTML = '<div class="tool-result-text"><pre>' + escapeHtml(truncated) + '</pre></div>';
+          msgs.appendChild(d);
+          scrollBottom();
+        }
+        return;
+
+      case 'done':
+        finalizeThinking();
+        busy = false;
+        btn.disabled = false;
+        curBubble = null;
+        curBuf = '';
+        return;
+
+      case 'error':
+        if (curBubble) {
+          curBubble.classList.add('err');
+          curBubble.querySelector('.mc')!.innerHTML += '<p class="err-msg">' + escapeHtml(data.message) + '</p>';
+        }
+        busy = false;
+        btn.disabled = false;
+        curBubble = null;
+        curBuf = '';
+        return;
     }
-    if (thinkingContent) {
-      thinkingContent.textContent = thinkingBuf;
-      scrollBottom();
-    }
-    return;
-  }
-  if (t === 'tool_start' && !data.t) {
-    if (busy && curBubble && thinkingSection) {
-      finalizeThinking();
-    }
-    const toolBubble = addToolBubble(data.call.name);
-    toolBubble.querySelector('.mc')!.innerHTML =
-      '<pre class="tool-args">' + escapeHtml(JSON.stringify(data.call.args, null, 2)) + '</pre>' +
-      '<div class="tool-status"><span class="spinner"></span> Running...</div>';
-    toolBubble.setAttribute('data-call', JSON.stringify(data.call));
-    scrollBottom();
-    return;
-  }
-  if (t === 'tool_result' && !data.t) {
-    // Update the last tool bubble with the result
-    const toolBubbles = msgs.querySelectorAll('.tool-msg');
-    const last = toolBubbles[toolBubbles.length - 1] as HTMLElement;
-    if (last) {
-      const statusEl = last.querySelector('.tool-status');
-      if (statusEl) {
-        const result = data.result || '';
-        const truncated = result.length > 2000 ? result.slice(0, 2000) + '\n... (truncated)' : result;
-        statusEl.innerHTML = '<pre class="tool-result">' + escapeHtml(truncated) + '</pre>';
-      }
-    }
-    scrollBottom();
-    return;
-  }
-  if (t === 'error' && !data.t) {
-    if (curBubble) {
-      curBubble.classList.add('err');
-      const mc = curBubble.querySelector('.mc')!;
-      mc.innerHTML += '<p class="err-msg">' + escapeHtml(data.message) + '</p>';
-    }
-    busy = false;
-    btn.disabled = false;
-    btnAgent.disabled = false;
-    curBubble = null;
-    curBuf = '';
-    return;
   }
 
   // Standard protocol messages
-  switch (t) {
+  switch (data.t) {
     case 'm':
-      const bubble = addBubble(data.r);
-      const mc = bubble.querySelector('.mc')!;
-      mc.innerHTML = data.r === 'assistant'
-        ? renderMarkdownWithCodeActions(data.x)
-        : '<p>' + escapeHtml(data.x) + '</p>';
-      lastMsgText = data.x;
+      {
+        const bubble = addBubble(data.r);
+        const mc = bubble.querySelector('.mc')!;
+        mc.innerHTML = data.r === 'assistant'
+          ? renderMarkdownWithCodeActions(data.x)
+          : '<p>' + escapeHtml(data.x) + '</p>';
+      }
       break;
 
     case 'st':
@@ -163,7 +167,6 @@ function handleMessage(data: any): void {
       thinkingStart = Date.now();
       busy = true;
       btn.disabled = true;
-      btnAgent.disabled = true;
       break;
 
     case 'tk':
@@ -191,9 +194,7 @@ function handleMessage(data: any): void {
       finalizeThinking();
       busy = false;
       btn.disabled = false;
-      btnAgent.disabled = false;
       curBubble = null;
-      lastMsgText = curBuf;
       curBuf = '';
       break;
 
@@ -205,7 +206,6 @@ function handleMessage(data: any): void {
       }
       busy = false;
       btn.disabled = false;
-      btnAgent.disabled = false;
       curBubble = null;
       curBuf = '';
       break;
@@ -215,20 +215,11 @@ function handleMessage(data: any): void {
       hdr.textContent = (data.l || '') + ' | ' + (data.f || '');
       break;
 
-    case 'ok':
-      // File created
-      break;
-
-    case 'fl':
-      // File failed
-      break;
-
     case 'clear':
       msgs.innerHTML = '<div class="emp" id="emp"><b>Code AI</b><br>Ask me to build anything.</div>';
       empty = msgs.querySelector('#emp')!;
       busy = false;
       btn.disabled = false;
-      btnAgent.disabled = false;
       curBubble = null;
       curBuf = '';
       break;
@@ -253,19 +244,7 @@ function send(): void {
   input.value = '';
   busy = true;
   btn.disabled = true;
-  btnAgent.disabled = true;
-  vscode.postMessage({ t: 's', x: text, agent: agentMode });
-}
-
-function toggleAgent(): void {
-  agentMode = !agentMode;
-  btnAgent.classList.toggle('active', agentMode);
-  btnAgent.title = agentMode
-    ? 'Agent mode ON — AI can read/write files and run commands'
-    : 'Agent mode OFF — click to enable autonomous tool use';
-  input.placeholder = agentMode
-    ? 'Agent mode — say what you want done...'
-    : 'Say something...';
+  vscode.postMessage({ t: 's', x: text });
 }
 
 // ---- Init ----
@@ -274,24 +253,20 @@ function init(): void {
   msgs = document.getElementById('msgs')!;
   input = document.getElementById('tin') as HTMLTextAreaElement;
   btn = document.getElementById('btn') as HTMLButtonElement;
-  btnAgent = document.getElementById('btn-agent') as HTMLButtonElement;
   hdr = document.getElementById('hdr')!;
   empty = document.getElementById('emp')!;
 
   btn.onclick = send;
-  btnAgent.onclick = toggleAgent;
-  btnAgent.title = 'Agent mode OFF — click to enable autonomous tool use';
 
   input.onkeydown = function (e: KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
-    if (e.key === 'Enter' && e.ctrlKey) { toggleAgent(); }
   };
 
   window.addEventListener('message', function (e: MessageEvent) {
     handleMessage(e.data);
   });
 
-  // Request context
+  // Request context from extension
   vscode.postMessage({ t: 'c' });
 
   // Code copy button delegation

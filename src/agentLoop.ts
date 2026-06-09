@@ -47,31 +47,9 @@ function buildToolResultPrompt(results: string[]): string {
   ].join('\n');
 }
 
-function hasToolBlocks(text: string): boolean {
-  return /<tool\s+name="/.test(text);
-}
-
-function streamSafeText(
-  fullText: string,
-  onText: (s: string) => void,
-  prevLen: number,
-): number {
-  // Strip any partial/complete <tool> blocks from the text for display
-  const noTool = fullText.replace(/<tool[\s\S]*$/g, '').trimEnd();
-  if (noTool.length > prevLen) {
-    const delta = noTool.slice(prevLen);
-    if (delta.trim()) {
-      onText(delta);
-    }
-    return noTool.length;
-  }
-  return prevLen;
-}
-
 function cleanForDisplay(text: string): string {
   return text
     .replace(/<tool\s+name="[^"]+"\s*>\s*\n?[\s\S]*?\n?\s*<\/tool>/g, '')
-    .replace(/<tool[\s\S]*$/g, '')
     .trim();
 }
 
@@ -85,7 +63,6 @@ export async function runAgent(
     return;
   }
 
-  // Collect context
   let ctxStr = '';
   try {
     const ctx = await getFullContext();
@@ -97,13 +74,13 @@ export async function runAgent(
   addMessage({ role: 'user', content: userMessage, timestamp: Date.now() });
 
   let currentPrompt = buildAgentPrompt(userMessage, ctxStr);
-  let fullAssistantContent = '';
+  let allDisplayText = '';
 
   for (let turn = 0; turn < MAX_AGENT_TURNS; turn++) {
+    // Accumulate full response + display text locally during streaming
     let fullResponse = '';
-    let displayLen = 0;
+    let displayText = '';
 
-    // --- API call with retry ---
     let lastErr = '';
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       if (attempt > 0) {
@@ -115,19 +92,19 @@ export async function runAgent(
           currentPrompt,
           cfg.token,
           cfg.verifySsl,
-          (token) => {
-            // Stream-safe display: show text but hide <tool> blocks
-            displayLen = streamSafeText(
-              fullResponse,
-              (t) => onProgress({ type: 'text', text: t }),
-              displayLen,
-            );
+          (delta) => {
+            // Show non-tool text as it streams in, stripping any <tool> content
+            const cleanDelta = delta.replace(/<tool[\s\S]*$/g, '');
+            if (cleanDelta) {
+              displayText += cleanDelta;
+              onProgress({ type: 'text', text: cleanDelta });
+            }
           },
           (think) => {
             onProgress({ type: 'thinking', text: think });
           },
         );
-        break; // success
+        break;
       } catch (e: any) {
         const classified = classifyError(e);
         lastErr = classified.message;
@@ -143,28 +120,22 @@ export async function runAgent(
       return;
     }
 
-    // --- Parse tool calls ---
+    allDisplayText += displayText;
+
+    // Parse tool calls from the full response
     const toolCalls = parseToolCalls(fullResponse);
 
     if (toolCalls.length === 0) {
-      // Done — stream remaining display text
-      const display = cleanForDisplay(fullResponse);
-      const delta = display.slice(
-        fullAssistantContent ? cleanForDisplay(fullAssistantContent).length : 0,
-      );
-      if (delta) onProgress({ type: 'text', text: delta });
-
-      fullAssistantContent += '\n\n' + fullResponse;
       addMessage({
         role: 'assistant',
-        content: display,
+        content: cleanForDisplay(fullResponse),
         timestamp: Date.now(),
       });
       onProgress({ type: 'done' });
       return;
     }
 
-    // --- Execute tools ---
+    // Execute tools
     const results: string[] = [];
     for (const call of toolCalls) {
       onProgress({ type: 'tool_start', call });
@@ -180,17 +151,10 @@ export async function runAgent(
       );
     }
 
-    // Extract human-readable text before tool blocks
-    const preText = cleanForDisplay(fullResponse);
-    if (preText) {
-      fullAssistantContent += '\n\n' + preText;
-    }
-
-    // Build next prompt
+    // Build next prompt with tool results
     currentPrompt = buildToolResultPrompt(results);
   }
 
-  // Max turns
   onProgress({
     type: 'error',
     message: `Reached ${MAX_AGENT_TURNS} agent turns. Stopping.`,

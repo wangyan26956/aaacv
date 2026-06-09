@@ -1,11 +1,11 @@
 import * as vscode from 'vscode';
-import { streamChat, streamChatAgent } from './claudeService';
+import { streamChatAgent } from './claudeService';
 import { getFullContext } from './contextProvider';
 import { setWebviewPoster } from './commands';
 import { writeFile } from './fileOps';
 import { getMessages, setMessages } from './chatHistory';
 import { saveChatToHistory, loadChatHistory } from './chatPersistence';
-import type { AgentEvent, AgentProgressCallback } from './agentLoop';
+import type { AgentProgressCallback } from './agentLoop';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   static readonly viewType = 'claudeCode.chatView';
@@ -28,11 +28,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     setWebviewPoster((msg: any) => webviewView.webview.postMessage(msg));
 
-    // Message handler
     webviewView.webview.onDidReceiveMessage((data: any) => {
       switch (data.t) {
         case 's':
-          this._handleSendMessage(data.x, data.agent === true);
+          this._handleSendMessage(data.x);
           break;
         case 'c':
           this._handleRequestContext();
@@ -46,7 +45,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     });
 
-    // Restore chat history
     this._restoreHistory(webviewView.webview);
   }
 
@@ -70,8 +68,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   </div>
   <div id="foot">
     <textarea id="tin" placeholder="Say something..." rows="1"></textarea>
-    <button id="btn" title="Send">Send</button>
-    <button id="btn-agent" title="Agent mode — AI can read/write files and run commands">Agent</button>
+    <button id="btn">Send</button>
   </div>
   <script src="${scriptUri}"></script>
 </body>
@@ -94,35 +91,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async _handleSendMessage(text: string, agentMode: boolean): Promise<void> {
+  private async _handleSendMessage(text: string): Promise<void> {
     const webview = this._view?.webview;
     if (!webview) return;
 
+    // Show user message
     webview.postMessage({ t: 'm', r: 'user', x: text });
 
-    if (agentMode) {
-      // --- Agent mode ---
-      webview.postMessage({ t: 'st' });
-      const onProgress: AgentProgressCallback = (ev) => {
-        webview.postMessage(ev);
-      };
-      await streamChatAgent(text, onProgress);
-      webview.postMessage({ t: 'dn' });
-    } else {
-      // --- Simple chat mode ---
-      webview.postMessage({ t: 'st' });
-      try {
-        await streamChat(
-          text,
-          (chunk: string) => webview.postMessage({ t: 'tk', x: chunk }),
-          (thinking: string) => webview.postMessage({ t: 'th', x: thinking }),
-        );
-      } catch (e: any) {
-        webview.postMessage({ t: 'er', x: String(e?.message || e) });
-      }
-      webview.postMessage({ t: 'dn' });
-    }
+    // Start agent mode — AI always has tools
+    webview.postMessage({ t: 'st' });
 
+    const onProgress: AgentProgressCallback = (ev) => {
+      webview.postMessage(ev);
+    };
+
+    await streamChatAgent(text, onProgress);
+
+    webview.postMessage({ t: 'dn' });
     this._saveToDisk();
   }
 
@@ -130,11 +115,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     try {
       const ctx = await getFullContext();
       if (ctx && this._view) {
-        this._view.webview.postMessage({
-          t: 'ct',
-          f: ctx.filePath,
-          l: ctx.language,
-        });
+        this._view.webview.postMessage({ t: 'ct', f: ctx.filePath, l: ctx.language });
       }
     } catch {
       // non-critical
