@@ -182,49 +182,101 @@ async function execGrep(args: Record<string, unknown>): Promise<string> {
   const glob = args.glob ? String(args.glob) : null;
   const context = Number(args.context) || 2;
 
-  // Use ripgrep if available, fallback to git grep
+  // Try ripgrep first, then git grep, then cmd.exe findstr (Windows built-in)
   const rgArgs = ['--no-heading', '--line-number', '-C', String(context), pattern];
-  if (glob) {
-    rgArgs.unshift('-g', glob);
-  }
+  if (glob) rgArgs.unshift('-g', glob);
   rgArgs.push(searchPath);
 
-  try {
+  const tryRg = async (): Promise<string> => {
     const { stdout } = await execFileAsync('rg', rgArgs, { timeout: 10000, maxBuffer: 1024 * 500 });
-    const lines = stdout.trim().split('\n');
-    if (lines.length > 100) {
-      return lines.slice(0, 100).join('\n') + `\n... (${lines.length - 100} more matches, refine your search)`;
-    }
-    return stdout.trim() || 'No matches found';
-  } catch (e: any) {
-    if (e.killed) return 'Search timed out — try a narrower scope';
-    if (e.code === 1) return 'No matches found';
-    // rg not found, try findstr/git grep
-    try {
-      const { stdout } = await execFileAsync('git', ['grep', '-n', '-C', String(context), pattern], { timeout: 10000 });
-      return stdout.trim() || 'No matches found';
-    } catch {
-      return `Search error: ${e.message}`;
-    }
+    return formatGrepOutput(stdout.trim());
+  };
+
+  const tryGitGrep = async (): Promise<string> => {
+    const { stdout } = await execFileAsync('git', ['grep', '-n', '-C', String(context), pattern], { timeout: 10000, maxBuffer: 1024 * 500 });
+    return formatGrepOutput(stdout.trim());
+  };
+
+  const tryFindStr = async (): Promise<string> => {
+    // Windows findstr — no context support, just matching lines
+    const { stdout } = await execFileAsync('cmd.exe', ['/c', `findstr /s /n /i "${pattern}" *.* 2>nul`], { timeout: 10000, cwd: searchPath, maxBuffer: 1024 * 500 });
+    return formatGrepOutput(stdout.trim());
+  };
+
+  const attempts = [tryRg];
+  if (process.platform === 'win32') {
+    attempts.push(tryFindStr, tryGitGrep);
+  } else {
+    attempts.push(tryGitGrep);
   }
+
+  for (const fn of attempts) {
+    try {
+      const result = await fn();
+      if (result && result !== 'No matches found') return result;
+    } catch { /* try next */ }
+  }
+
+  return 'No matches found';
+}
+
+function formatGrepOutput(stdout: string): string {
+  if (!stdout) return 'No matches found';
+  const lines = stdout.split('\n');
+  if (lines.length > 100) {
+    return lines.slice(0, 100).join('\n') + `\n... (${lines.length - 100} more matches, narrow your search)`;
+  }
+  return stdout;
 }
 
 async function execBash(args: Record<string, unknown>): Promise<string> {
   const command = String(args.command || '');
   const desc = String(args.description || '');
 
-  // Safety check: reject obviously dangerous patterns
+  // Safety check
   const dangerous = /\brm\s+-rf\b|\bgit\s+push\s+--force\b|\bformat\s+[A-Z]:|\bdel\s+\/[sq]\b/i;
   if (dangerous.test(command)) {
     return `BLOCKED: This command looks dangerous. Description: ${desc}`;
   }
 
+  const cwd = getWorkspaceRoot();
+  const timeout = 30000;
+  const maxBuffer = 1024 * 500;
+
+  // On Windows, try cmd.exe first (always available, no execution policy issues),
+  // then PowerShell as fallback
+  if (process.platform === 'win32') {
+    // Try cmd.exe
+    try {
+      const { stdout, stderr } = await execFileAsync('cmd.exe', ['/c', command], {
+        timeout, maxBuffer, cwd,
+      });
+      const out = stdout.trim();
+      const err = stderr.trim();
+      if (out && err) return `${out}\n\n[stderr]:\n${err}`;
+      return out || err || '(command completed, no output)';
+    } catch (e: any) {
+      if (e.killed) return 'Command timed out after 30s';
+      // cmd.exe failed, try PowerShell
+      try {
+        const { stdout, stderr } = await execFileAsync('powershell.exe', ['-ExecutionPolicy', 'Bypass', '-Command', command], {
+          timeout, maxBuffer, cwd,
+        });
+        const out = stdout.trim();
+        const err = stderr.trim();
+        if (out && err) return `${out}\n\n[stderr]:\n${err}`;
+        return out || err || '(command completed, no output)';
+      } catch (e2: any) {
+        if (e2.killed) return 'Command timed out after 30s';
+        return `Cannot run command. cmd.exe: ${e.message}. powershell.exe: ${e2.message}`;
+      }
+    }
+  }
+
+  // Unix
   try {
-    const shell = process.platform === 'win32' ? 'powershell.exe' : '/bin/bash';
-    const { stdout, stderr } = await execFileAsync(shell, [shell === 'powershell.exe' ? '-Command' : '-c', command], {
-      timeout: 30000,
-      maxBuffer: 1024 * 500,
-      cwd: getWorkspaceRoot(),
+    const { stdout, stderr } = await execFileAsync('/bin/bash', ['-c', command], {
+      timeout, maxBuffer, cwd,
     });
     const out = stdout.trim();
     const err = stderr.trim();
