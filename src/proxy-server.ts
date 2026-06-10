@@ -127,12 +127,126 @@ function callAia(question: string, history: any[], onData: (c: string) => void, 
   doRequest(AIA_BASE_URL, 2);
 }
 
-function makeTranslator(res: http.ServerResponse, msgId: string, onDone: () => void): (raw: string) => void {
-  let buf = '', fullText = '', fullThink = '', textIdx = -1, thinkIdx = -1;
-  let totalTokens = 0;
+// ---- Streaming Tool Block Parser ----
+// Parses <tool name="xxx">JSON</tool> from streaming text and emits
+// proper Anthropic tool_use content blocks. Handles partial tags.
 
-  const flushThink = () => { if (thinkIdx >= 0) { res.write(`event: content_block_stop\ndata: {"type":"content_block_stop","index":${thinkIdx}}\n\n`); thinkIdx = -1; } };
-  const flushText = () => { if (textIdx >= 0) { res.write(`event: content_block_stop\ndata: {"type":"content_block_stop","index":${textIdx}}\n\n`); textIdx = -1; } };
+function makeTooluId(): string {
+  return 'toolu_' + genId().replace(/-/g, '').slice(0, 8);
+}
+
+interface ContentBlock {
+  idx: number;
+  type: 'text' | 'tool_use';
+  closed: boolean;
+  toolName?: string;
+  toolId?: string;
+}
+
+function makeTranslator(res: http.ServerResponse, msgId: string, onDone: () => void): (raw: string) => void {
+  let buf = '', fullText = '', fullThink = '', thinkIdx = -1;
+  let totalTokens = 0;
+  let nextIdx = 1; // next available content block index (0 = thinking)
+  let curBlock: ContentBlock | null = null;
+  let lastSafePos = 0; // position in fullText that has been safely emitted
+
+  // Regex for complete tool blocks (same as tools.ts)
+  const TOOL_RE = /<tool\s+name="([^"]+)"\s*>\s*\n?([\s\S]*?)\n?\s*<\/tool>/g;
+
+  const flushThink = () => {
+    if (thinkIdx >= 0) {
+      res.write(`event: content_block_stop\ndata: {"type":"content_block_stop","index":${thinkIdx}}\n\n`);
+      thinkIdx = -1;
+    }
+  };
+
+  const closeBlock = () => {
+    if (curBlock && !curBlock.closed) {
+      curBlock.closed = true;
+      res.write(`event: content_block_stop\ndata: {"type":"content_block_stop","index":${curBlock.idx}}\n\n`);
+    }
+    curBlock = null;
+  };
+
+  const openTextBlock = () => {
+    if (curBlock?.type === 'text' && !curBlock.closed) return; // already open
+    closeBlock();
+    curBlock = { idx: nextIdx++, type: 'text', closed: false };
+    res.write(`event: content_block_start\ndata: {"type":"content_block_start","index":${curBlock.idx},"content_block":{"type":"text","text":""}}\n\n`);
+  };
+
+  const emitText = (t: string) => {
+    if (!t) return;
+    openTextBlock();
+    res.write(`event: content_block_delta\ndata: {"type":"content_block_delta","index":${curBlock!.idx},"delta":{"type":"text_delta","text":${JSON.stringify(t)}}}\n\n`);
+  };
+
+  const emitToolBlock = (name: string, argsJson: string) => {
+    let args: Record<string, unknown>;
+    try { args = JSON.parse(argsJson); } catch { return false; } // invalid JSON → treat as text
+    closeBlock();
+    const toolId = makeTooluId();
+    curBlock = { idx: nextIdx++, type: 'tool_use', closed: false, toolName: name, toolId };
+    res.write(`event: content_block_start\ndata: {"type":"content_block_start","index":${curBlock.idx},"content_block":{"type":"tool_use","id":"${toolId}","name":"${name}","input":{}}}\n\n`);
+    const jsonStr = JSON.stringify(args);
+    res.write(`event: content_block_delta\ndata: {"type":"content_block_delta","index":${curBlock.idx},"delta":{"type":"input_json_delta","partial_json":${JSON.stringify(jsonStr)}}}\n\n`);
+    closeBlock();
+    return true;
+  };
+
+  // Process newly available text, emitting completed segments
+  const processSegments = () => {
+    const unprocessed = fullText.slice(lastSafePos);
+    if (!unprocessed) return;
+
+    // Find all complete <tool>...</tool> blocks in the unprocessed region
+    const toolMatches: Array<{ start: number; end: number; name: string; argsJson: string }> = [];
+    TOOL_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = TOOL_RE.exec(unprocessed)) !== null) {
+      toolMatches.push({ start: m.index, end: m.index + m[0].length, name: m[1], argsJson: m[2].trim() });
+    }
+
+    if (toolMatches.length === 0) {
+      // No complete tool blocks. Check if a partial <tool tag is starting.
+      const partialIdx = unprocessed.search(/<tool\s/);
+      if (partialIdx !== -1) {
+        // Emit safe text before the partial tag
+        emitText(unprocessed.slice(0, partialIdx));
+        lastSafePos += partialIdx;
+        return;
+      }
+      // No tool tags at all — emit everything
+      emitText(unprocessed);
+      lastSafePos += unprocessed.length;
+      return;
+    }
+
+    // Process text between tool blocks
+    let cursor = 0;
+    for (const tm of toolMatches) {
+      const before = unprocessed.slice(cursor, tm.start);
+      emitText(before);
+
+      // Try to emit as tool_use; fall back to text if JSON is invalid
+      if (!emitToolBlock(tm.name, tm.argsJson)) {
+        emitText(unprocessed.slice(tm.start, tm.end));
+      }
+      cursor = tm.end;
+    }
+    lastSafePos += cursor;
+
+    // After last complete tool block, check for trailing partial tag
+    const trailing = unprocessed.slice(cursor);
+    const partialIdx = trailing.search(/<tool\s/);
+    if (partialIdx !== -1) {
+      emitText(trailing.slice(0, partialIdx));
+      lastSafePos += partialIdx;
+    } else {
+      emitText(trailing);
+      lastSafePos += trailing.length;
+    }
+  };
 
   return (raw: string) => {
     buf += raw; const lines = buf.split('\n'); buf = lines.pop() || '';
@@ -141,7 +255,11 @@ function makeTranslator(res: http.ServerResponse, msgId: string, onDone: () => v
       const p = line.slice(6).trim();
       if (DEBUG) hdr('AIA SSE:', p.slice(0, 200));
       if (p === '[DONE]') {
-        flushThink(); flushText();
+        flushThink();
+        // Emit any remaining unprocessed text
+        const remaining = fullText.slice(lastSafePos);
+        if (remaining.trim()) { emitText(remaining); lastSafePos += remaining.length; }
+        closeBlock();
         const outTokens = totalTokens || Math.ceil(fullText.length / 2.5);
         res.write(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { input_tokens: 0, output_tokens: outTokens } })}\n\n`);
         res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
@@ -155,20 +273,21 @@ function makeTranslator(res: http.ServerResponse, msgId: string, onDone: () => v
 
         // Only emit text when message_type is 4 or 5 (matches AIA client logic)
         const text = (mt === 4 || mt === 5) ? rawText : '';
-        // Track total tokens from the final event if available
         if (ev.total_tokens) totalTokens = ev.total_tokens;
+
+        // Thinking
         if (think && think !== fullThink) {
           const d = think.slice(fullThink.length); if (!d) continue;
           if (thinkIdx < 0) { thinkIdx = 0; res.write(`event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n`); }
           res.write(`event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":${JSON.stringify(d)}}}\n\n`);
           fullThink = think;
         }
+
+        // Text — with tool-block parsing
         if (text && text !== fullText) {
-          const d = text.slice(fullText.length); if (!d) continue;
-          if (thinkIdx >= 0) flushThink();
-          if (textIdx < 0) { textIdx = 1; res.write(`event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}\n\n`); }
-          res.write(`event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":${JSON.stringify(d)}}}\n\n`);
+          flushThink();
           fullText = text;
+          processSegments();
         }
       } catch { /* skip */ }
     }
